@@ -1,0 +1,166 @@
+# Project Glass × Causal Long Video Generation
+
+> 这份文档是项目的"锚点"。每次回来先读这里，确认手上的工作仍然服务于下面的目标。
+> 目标或假设变了，就更新这里，并在末尾的「决策记录」里写一行。
+
+## 一句话目标
+
+**研究 causal（自回归）long video generation 中的 memory 瓶颈，并说明 GlassML 玻璃基板系统（超大 on-glass DRAM + 高带宽光互连）能让这类 video gen / world model 做到当前 GPU 系统（H100 / B200 / NVL72）做不到的事。**
+
+四个关键词缺一不可：
+
+| 关键词 | 在本项目中的含义 |
+|---|---|
+| **Video gen** | 视频生成 / world model，以开源模型为载体（如 Wan2.1 系列及其 causal 变体） |
+| **Causal** | 自回归、逐 chunk 生成（Self-Forcing、CausVid 一类），KV cache / 历史状态随视频长度增长 |
+| **Memory** | 核心瓶颈：KV cache、训练 rollout 激活、teacher/student 状态等随 horizon 增长的状态 |
+| **Glass** | GlassML 玻璃基板：大容量 DRAM（双面 / 多 plane）+ 光互连，作为解决方案的硬件平台 |
+
+## 核心论点（待验证）
+
+1. Causal long video 的状态随长度线性增长。例如 Wan 14B 在 480p 下，1 小时视频的完整 KV cache 约 30 TB（粗估，见下）。
+2. 当前 GPU 系统放不下，只能用 sliding window、attention sink、压缩、KV 量化、SP/CP 切分等手段，**代价是长程一致性下降**（遗忘场景、身份漂移）或通信开销。
+3. Glass 的大内存池让完整（或分层保留的）历史常驻在计算附近，光互连让远端历史可以被高效取回。
+4. 因此 glass 在 **更长 horizon、更好长程一致性、更少 memory-forced 并行** 上占优。
+
+## 硬件假设（来自导师转述的 Tianqi 模型，含义待确认）
+
+| | GB200 NVL72 | Glass（Tianqi 模型） |
+|---|---|---|
+| 互连带宽 | 130 TB/s NVLink | 最高 **8 PB/s** 光带宽 |
+| 内存容量 | 13.4 TB HBM（GB300：20 TB HBM） | **≥ 85 TB DRAM**（玻璃双面；利用 plane 之间空间可能更多） |
+
+注：GlassML 论文本身（`David_MoE_glass.pdf` §III-A / §V-A）的配置是 600×600 mm 面板、64 个 tile，每个 tile = B300 + 288 GB HBM3e，合计 18.4 TB HBM，单 tile 光互连点对点最高 4 TB/s。**论文里没有 DRAM 面板，也没有近存计算。** 85 TB DRAM 和 8 PB/s 是 Tianqi 模型的扩展，不在论文里。
+
+⚠️ 尚未确认：DRAM 面板怎么接到 GPU？是正下方通过 TGV 垂直直连（本地），还是走光互连（远端）？这决定了取 KV block 走哪条路。另外：8 PB/s 是总带宽 / 二分带宽 / 每 tile 注入带宽？85 TB 是哪种 DRAM，计算单元访问它的带宽和延迟是多少？计算 tile 数量和规格？
+（注：`Mingjia-Research/.../argument_memo.md` 基于旧的 73 TB/s 假设，其中"带宽输给 NVL72"的论述已过时，可引用其结构，不要照搬结论。）
+
+## 粗估：KV cache 随视频长度的增长
+
+假设：bf16，832×480，只算 self-attn KV。KV/token = 2 × layers × hidden × 2 bytes。每个 latent 帧约 1560 tokens（VAE 空间 8×、patch 2×2）。
+
+每秒 latent 帧数有两种口径，因此给出一个范围：
+- 低值：Wan 原生 16 fps、时间压缩 4× → 4 latent 帧/s（约 6.2k tokens/s）
+- 高值：团队 deck 写的"1 latent frame ≈ 0.16s" → 约 6.25 latent 帧/s（约 10k tokens/s）
+
+| 视频长度 | Wan 1.3B（30 层，hidden 1536，≈184 KB/token） | Wan 14B（40 层，hidden 5120，≈0.82 MB/token） |
+|---|---:|---:|
+| 1 分钟 | ≈ 70–110 GB | ≈ 300–490 GB |
+| 10 分钟 | ≈ 0.7–1.1 TB | ≈ 3.1–4.9 TB |
+| 1 小时 | ≈ 4.1–6.6 TB | ≈ 18–30 TB |
+
+720p 每帧 token 约为 480p 的 2.3 倍。⚠️ 两种口径的差异要在实测中确认（实际跑 Self-Forcing / CausVid 时数一下每秒的 latent 帧数）。
+
+## 研究问题
+
+- **RQ1（容量）**：不同模型 / 分辨率 / horizon 下，causal 生成（推理 + 训练）的内存需求是多少？各系统在哪个 horizon 被迫切分、offload 或丢弃历史？
+- **RQ2（质量，次要）**：丢弃 / 压缩历史对长程一致性的损害。**本项目是 infra paper，不做系统性的算法对比**：
+  - motivation 主要引用已有论文（MoC、WorldMem、WorldTrace、PackForcing、Quant VideoGen）；
+  - 至多放一张小表（可用组内 Dense W3 与 W3+remote 的已有结果）；
+  - 只有当硬件设计改变了算法（如改 k、block 大小、用预测预取）时，才需要做 iso-quality 验证。
+  - 参照 GlassML 论文：评测章节没有任何模型质量实验，只用真实 checkpoint 的 forward 采集 routing trace，再注入模拟器。
+- **RQ3（系统）**：在 glass 上如何组织内存？例如热窗口放 HBM、完整历史放 glass DRAM、通过光互连按需取回相关 chunk（sparse / retrieval attention）。容量够了之后，带宽和 attention 计算是否成为新瓶颈？
+- **RQ4（对比）**：同一 workload 在 NVL72 与 glass 上的端到端延迟、可支持 horizon、并发 rollout 数对比。
+
+## 方法方向（2026-10-04 确定）
+
+**Causal sparse attention finetune**：在已有的 causal 视频模型上，让每个 chunk 只 attend「sink + 最近窗口 + 从完整历史里按内容选出的 top-k chunk」，并做轻量 finetune。
+
+- **现成实现**：`~/Desktop/Project-WM-Long-Context/WM-Game-Training`（diffusion forcing causal 训练 + VSA sparse attention）。
+  - `vsa/hybrid.py`：最近窗口精确 attention + 远端 top-k 检索。
+  - `vsa/DESIGN.md`：两个分支：
+    - 压缩分支（agg）：block 均值，对全部历史做 attention；
+    - 选择分支：对 top-k block 做 full attention；
+    - 合并方式：`out = out_sparse + tanh_gate * out_compress`。
+  - 训练配方：`config/game/df_vsa.yaml`。
+  - ⚠️ 使用前确认这套代码和 PAN 模型能否用于本论文。
+- **不自己实现 Self-Forcing 训练**：用上面的现成 DF + VSA 管线；备选是开源的 Self-Forcing checkpoint（Wan2.1-1.3B）。
+- **公开版 FastVideo（2026-10-04 查过，commit 6ded84e）没有 causal VSA**：
+  - 有 causal Wan + Self-Forcing：`fastvideo/models/wan/causal_transformer.py`。训练用 flex_attention；推理用 FA + 滚动 KV cache（sink + local window）。
+  - 有 VSA：`fastvideo/attention/backends/video_sparse_attn.py`，但只接在双向 Wan 上；它的 `causal` 参数被忽略。
+  - 没有相关 PR。
+  - 应对：先用纯 PyTorch 在 causal Wan 的 KV cache 上实现 top-k block 选择，用来采集 trace；需要 finetune 或提速时，再移植 VSA kernel。
+- **不做基于相机轨迹的检索**（WorldMem / Context-as-Memory 那类）：按内容选 chunk（pooled key 相似度），更通用。
+- **与 glass 的连接**：完整 KV 历史放在 glass DRAM（靠容量），每步只取 top-k chunk（带宽需求小），通过光互连按需取回。这就是 RQ3 的软硬协同点。
+- **最近的已有工作，必须讲清差异**：Mixture of Contexts（ICLR 2026，可训练的 top-k chunk 路由）、PackForcing（中段压缩 + top-k）、FAST-AR（ANN 稀疏 attention）。差异点应放在**完整历史 + 内存层级感知**（chunk 粒度、预取、取数量与 glass 带宽匹配），而不只是稀疏算法本身。
+
+## 范围
+
+**做：**
+- Causal / 自回归视频生成的推理（KV cache）和训练（Self-Forcing 类 rollout 的激活内存）
+- 解析内存模型 + 真实 GPU 小规模实测 + 模拟器投影到 glass
+- 面向 world model 的长 horizon、交互式、多 rollout 场景
+
+**暂不做（防止偏移）：**
+- 纯 LLM / MoE 训练的 all-to-all 优化（那是 David 的 HPCA 论文主线，可复用但不是本项目重点）
+- 双向（非 causal）短视频生成的单纯加速
+- 玻璃基板的物理 / 热 / 光器件设计本身（用 Tianqi / Junda 的模型作为输入）
+- 训练新的大视频模型
+
+## 近期里程碑：11 月 review
+
+导师要求在 2026 年 11 月 review 前拿出"nice results"。计划约 6 周：
+
+1. **第 1 周**
+   - [ ] 与 David、Tianqi 对齐：拿到模拟器 / 模型，确认上面的硬件假设
+   - [ ] 将内存解析模型写成脚本，画出 **horizon 可行性曲线**（H100 / B200 / NVL72 / Glass）
+   - [ ] 获取原仓库 `research-glass-substrate` 访问权限（含未拷贝的 v4–v6 sweep、`glass_3d_dram` 等配置）
+2. **第 2–4 周**
+   - [ ] 在 GPU 上跑开源 causal 模型（Self-Forcing / CausVid，基于 Wan 1.3B）
+   - [ ] 实测内存、延迟随 horizon 的变化
+   - [ ] 实测 KV 窗口大小 → 长程一致性指标的关系（RQ2）
+3. **第 4–6 周**
+   - [ ] 将实测 workload 参数输入 Tianqi / David 的模拟器，投影 glass 性能并与 NVL72 对比
+   - [ ] 整理 review 用图表与 slides
+
+**review 目标图表：**
+1. Horizon 可行性曲线
+2. KV budget vs. 长程一致性
+3. NVL72 vs. Glass 端到端对比（每帧延迟 / 可支持 horizon / 并发 rollout 数）
+4. 关键通信 / 内存访问时间分解
+
+## 人员
+
+- 导师：项目方向与 review 要求
+- David：GlassML 架构与模拟器（HPCA 2027 投稿，`David_MoE_glass.pdf`）
+- Tianqi：光带宽与 on-glass DRAM 的硬件模型（8 PB/s，≥ 85 TB）
+- Mingjia / Junda：前期 world model memory 动机分析、内存 profiling、双面 glass 热分析（见 `Mingjia-Research/`）
+
+## 已有材料
+
+| 路径 | 内容 |
+|---|---|
+| `survey/glass_memory_papers.md` | **文献调研**：玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频与 world model 内存；必读顺序、术语表、研究空白 |
+| `survey/venues_and_timeline.md` | **投稿会议与时间线**：组里常投的 venue、Tianqi / David 的论文、2026-10 至 2027-12 的 deadline |
+| `David_MoE_glass.pdf` | GlassML HPCA 2027 投稿稿（保密，勿外传）：玻璃面板 + 可重构光互连，面向 MoE 训练 |
+| `Mingjia-Research/journal/20260610_world_model_memory/argument_memo.md` | world model memory 论证、测量方案建议（基于旧的 73 TB/s） |
+| `Mingjia-Research/journal/20260519_glass_motivation/` | 动机 slides 草稿、flow、`session_history.md`（含团队实测数字） |
+| `Mingjia-Research/ML_IoT Team 25-26 - Mingjia Junda only.pptx` | 团队实测数据来源（distillation 内存 profile、Wan SP profile 等） |
+| `Mingjia-Research/Glass ML Presentation Tajana Samsung SK.pptx` | GlassML 主 presentation |
+| `Mingjia-Research/papers/applications/StreamDiffusionV2.pdf` | 实时交互 world model 推理受内存限制的参考 |
+
+已知团队实测（来自 deck，部分为从图读出的近似值）：
+- Distillation（SP=1）：3 latent 帧峰值 55 GB，9 帧 135 GB，15 帧 OOM
+- Wan1.3B causal，B200，SP=4：每个去噪步 NCCL all-to-all 约 0.17–0.20 s；480p / 3.4s 时通信超过 FlashAttention 本身
+
+## 待解决问题
+
+- [ ] 8 PB/s 和 85 TB 的精确定义（见「硬件假设」）
+- [ ] 模拟器是否支持推理 / 视频 workload，还是需要扩展？
+- [ ] review 更看重训练还是推理结果？
+- [ ] 选哪个开源 causal 视频模型作为主载体？
+- [ ] 长程一致性用什么指标衡量？**评测必须包含「回到之前场景」的情况**（例如 LoopBench 或自建 revisit prompt），否则远处的历史用不上，看不出 full / sparse / window 的差别
+- [ ] 只用 teacher forcing 做 finetune 时，长 rollout 是否会漂移？需要先用 training-free 的 top-k 测一个 baseline
+
+## 决策记录
+
+| 日期 | 决策 / 变更 |
+|---|---|
+| 2026-10-04 | 确立项目目标：video gen + causal + memory + glass。采用 Tianqi 模型数字（8 PB/s，≥ 85 TB），取代旧 memo 的 73 TB/s 假设。 |
+| 2026-10-04 | 完成文献与会议调研（`survey/`）。KV 粗估改为区间（fps 口径不同）。初步论文目标：DATE LBR（11/29）拿早期反馈 → MICRO 2027（约 4 月）或 HPCA 2028（约 7 月底）。 |
+| 2026-10-04 | 讨论后倾向主投 DAC 2027（约 11/11 摘要、11/18 全文，待导师确认），DATE LBR 作保底；CVPR 不合适。 |
+| 2026-10-04 | 方法方向：causal sparse attention finetune，基于现成的 causal checkpoint；不做 Self-Forcing 训练，不做相机轨迹检索。 |
+| 2026-10-04 | 不引入近存计算，保持设计简单：路由（池化 key 打分）在 GPU 上做，索引放 HBM（即使按 VSA2 的 R=16，每个 tile 也只要约 9–15 GB，放得下）；完整 KV 放 glass DRAM，只搬运选中的 block。 |
+| 2026-10-04 | 只用 VSA v1（128-token block 均值作索引），不用 VSA2 的细粒度路由。 |
+| 2026-10-04 | 写好发给 Tianqi 的项目介绍和问题清单：`docs/intro_for_tianqi.md`。 |
+| 2026-10-04 | 定位为 infra paper：质量对比以引用为主，不自己系统测试；核心实验 = 真实模型 forward 采集 top-k 选择 trace → glass 内存 / 互连模拟（仿照 GlassML 的 routing trace 方法）。算法实现复用 WM-Game-Training 的 VSA hybrid。 |
