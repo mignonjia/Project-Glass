@@ -7,11 +7,25 @@
 
 **研究 causal（自回归）long video generation 中的 memory 瓶颈，并说明 GlassML 玻璃基板系统（超大 on-glass DRAM + 高带宽光互连）能让这类 video gen / world model 做到当前 GPU 系统（H100 / B200 / NVL72）做不到的事。**
 
+## 核心问题（2026-10-07）
+
+> **Why does next-generation world-model training need a larger, higher-bandwidth scale-up domain?**
+> 为什么下一代 world model 的训练需要更大、带宽更高的 scale-up 域？
+
+论文和 funding 都从这个问题出发。推理链条：
+
+1. **只讲容量发不了 paper**（David / Tianqi 的反馈），必须有带宽或调度问题。
+2. **铜线把 scale-up 域限制在一个机柜**（224 Gb/s 每 lane 时无源铜线不到 1 m）。NVL72 是 72 卡；NVIDIA 2027 年的 NVL576 仍在一个机柜内、用铜背板，靠堆密度（600 kW）。业界的光互连目前主要用在 scale-out（CPO 交换机）。
+3. **下一代 world model（视频 + MoE + 长记忆）让一个训练任务内紧耦合的通信组不断变大、更吃带宽**：MoE 专家并行要 AllToAll；长视频必须切序列（10 分钟 720p 就要 16–32 卡起），30 分钟以上一个样本可能超过 72 卡。
+4. **glass 的定位**：业界已经把玻璃当作封装基板（TSMC CoPoS、Intel，2028–2030）；GlassML 在同一块玻璃里做可重构光网络，把整块面板变成一个更大、带宽更高（每卡 8 TB/s，NVLink 的 4.4×）的 scale-up 域。
+
+我们要提供的是第 3 点的实测和 trace 证据（见 `docs/pan_compute_comm_estimate.md` 和 `docs/david_training_load_and_rl.md`）。
+
 四个关键词缺一不可：
 
 | 关键词 | 在本项目中的含义 |
 |---|---|
-| **Video gen** | 视频生成 / world model，以开源模型为载体（如 Wan2.1 系列及其 causal 变体） |
+| **Video gen** | 视频生成 / world model，以组内 PAN（DF + VSA，`WM-Game-Training`）为载体，**以训练为主**；候选：MoE 视频 world model（LingBot-Video MoE 30B-A3B） |
 | **Causal** | 自回归、逐 chunk 生成（Self-Forcing、CausVid 一类），KV cache / 历史状态随视频长度增长 |
 | **Memory** | 核心瓶颈：KV cache、训练 rollout 激活、teacher/student 状态等随 horizon 增长的状态 |
 | **Glass** | GlassML 玻璃基板：大容量 DRAM（双面 / 多 plane）+ 光互连，作为解决方案的硬件平台 |
@@ -66,20 +80,21 @@
 
 **Causal sparse attention finetune**：在已有的 causal 视频模型上，让每个 chunk 只 attend「sink + 最近窗口 + 从完整历史里按内容选出的 top-k chunk」，并做轻量 finetune。
 
-- **现成实现**：`~/Desktop/Project-WM-Long-Context/WM-Game-Training`（diffusion forcing causal 训练 + VSA sparse attention）。
-  - `vsa/hybrid.py`：最近窗口精确 attention + 远端 top-k 检索。
-  - `vsa/DESIGN.md`：两个分支：
-    - 压缩分支（agg）：block 均值，对全部历史做 attention；
-    - 选择分支：对 top-k block 做 full attention；
-    - 合并方式：`out = out_sparse + tanh_gate * out_compress`。
-  - 训练配方：`config/game/df_vsa.yaml`。
-  - ⚠️ 使用前确认这套代码和 PAN 模型能否用于本论文。
-- **不自己实现 Self-Forcing 训练**：用上面的现成 DF + VSA 管线；备选是开源的 Self-Forcing checkpoint（Wan2.1-1.3B）。
-- **公开版 FastVideo（2026-10-04 查过，commit 6ded84e）没有 causal VSA**：
-  - 有 causal Wan + Self-Forcing：`fastvideo/models/wan/causal_transformer.py`。训练用 flex_attention；推理用 FA + 滚动 KV cache（sink + local window）。
+- **当前（2026-10-07）**：模型和代码都用 PAN（`WM-Game-Training` commit `5a5544a`，DF + VSA W3 + remote），**重点是 DF + VSA 训练**；Self-Forcing 不在范围内。实验代码在 `exp/topk-trace` 分支（worktree：`.worktrees/topk-trace/experiments/topk_trace/`），分析文档在 main 的 `docs/`。
+- 候选方向：MoE 视频 world model（`robbyant/lingbot-video-moe-30b-a3b`：48 层、hidden 2048、128 专家 top-8 + 1 共享，配置和 GlassML 评测的 Qwen3-30B-A3B 相同），把 GlassML 的 MoE AllToAll 和长视频序列并行结合起来。
+- 以下是 2026-10-06 一度考虑、已被取代的 Wan2.1-14B / Krea / FastVideo 方案，保留作参考：
+  - 不用 Wan2.2-A14B 的原因：两个 expert 各有一份 KV cache，trace 和内存模型更复杂。
+  - Wan-AI 官方截至 2026-10 没有比 Wan2.2 更新的开源通用模型（2.5 / 2.6 只有 API）。
+- **FastVideo**（本地 `~/fastvideo/FastVideo`，分支 `worldmodel_exp`）：
+  - 有 causal Wan + Self-Forcing：`fastvideo/models/wan/causal_transformer.py`。训练用 flex_attention；推理用 FA + 固定大小的 KV cache（sink + local window）。
   - 有 VSA：`fastvideo/attention/backends/video_sparse_attn.py`，但只接在双向 Wan 上；它的 `causal` 参数被忽略。
-  - 没有相关 PR。
-  - 应对：先用纯 PyTorch 在 causal Wan 的 KV cache 上实现 top-k block 选择，用来采集 trace；需要 finetune 或提速时，再移植 VSA kernel。
+  - Krea checkpoint 还没注册进 FastVideo，需要加 registry / 配置。
+  - 应对：先让 KV cache 保留完整历史，再用纯 PyTorch 实现 top-k block 选择，用来采集 trace；需要 finetune 或提速时，再移植 VSA kernel。
+- **参考实现**：`/mnt/weka/shrd/wm/mingjia/WM-Game-Training`（PAN 的 DF causal 训练 + VSA；`vsa/` 在 `origin/main` 上，不在 dev 分支）。
+  - `vsa/hybrid.py`：最近窗口精确 attention + 远端 top-k 检索；训练配方 `config/game/df_vsa.yaml`。
+  - `vsa/DESIGN.md`：压缩分支（block 均值）+ 选择分支（top-k block full attention），`out = out_sparse + tanh_gate * out_compress`。
+  - 推理用的 cached top-k 选择（`fused_ar_rect_score_topk`、`hyvideo/models/transformers/streaming/causal_vsa.py`）可以移植过来。
+- **不自己实现 Self-Forcing 训练**：直接用现成的 causal checkpoint。
 - **不做基于相机轨迹的检索**（WorldMem / Context-as-Memory 那类）：按内容选 chunk（pooled key 相似度），更通用。
 - **与 glass 的连接**：完整 KV 历史放在 glass DRAM（靠容量），每步只取 top-k chunk（带宽需求小），通过光互连按需取回。这就是 RQ3 的软硬协同点。
 - **最近的已有工作，必须讲清差异**：Mixture of Contexts（ICLR 2026，可训练的 top-k chunk 路由）、PackForcing（中段压缩 + top-k）、FAST-AR（ANN 稀疏 attention）。差异点应放在**完整历史 + 内存层级感知**（chunk 粒度、预取、取数量与 glass 带宽匹配），而不只是稀疏算法本身。
@@ -106,7 +121,7 @@
    - [ ] 将内存解析模型写成脚本，画出 **horizon 可行性曲线**（H100 / B200 / NVL72 / Glass）
    - [ ] 获取原仓库 `research-glass-substrate` 访问权限（含未拷贝的 v4–v6 sweep、`glass_3d_dram` 等配置）
 2. **第 2–4 周**
-   - [ ] 在 GPU 上跑开源 causal 模型（Self-Forcing / CausVid，基于 Wan 1.3B）
+   - [ ] 在 GPU 上跑 causal Wan2.1-14B（Krea Realtime 14B，FastVideo）
    - [ ] 实测内存、延迟随 horizon 的变化
    - [ ] 实测 KV 窗口大小 → 长程一致性指标的关系（RQ2）
 3. **第 4–6 周**
@@ -131,6 +146,9 @@
 | 路径 | 内容 |
 |---|---|
 | `survey/glass_memory_papers.md` | **文献调研**：玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频与 world model 内存；必读顺序、术语表、研究空白 |
+| `docs/pan_compute_comm_estimate.md` | PAN + VSA 的显存实测、选择 trace、10 分钟 / NVL72 估算（完整记录） |
+| `docs/david_training_load_and_rl.md` | 给 David：逐层训练负载拆解、长度与切分扫描、CP 偏斜、LLM / VLM RL 估算、两个方向的对比 |
+| `survey/sparse_attn_video_training.md` | 稀疏 attention × 视频 × GPU 系统（偏训练）文献调研 |
 | `survey/venues_and_timeline.md` | **投稿会议与时间线**：组里常投的 venue、Tianqi / David 的论文、2026-10 至 2027-12 的 deadline |
 | `David_MoE_glass.pdf` | GlassML HPCA 2027 投稿稿（保密，勿外传）：玻璃面板 + 可重构光互连，面向 MoE 训练 |
 | `Mingjia-Research/journal/20260610_world_model_memory/argument_memo.md` | world model memory 论证、测量方案建议（基于旧的 73 TB/s） |
@@ -148,7 +166,7 @@
 - [ ] 8 PB/s 和 85 TB 的精确定义（见「硬件假设」）
 - [ ] 模拟器是否支持推理 / 视频 workload，还是需要扩展？
 - [ ] review 更看重训练还是推理结果？
-- [ ] 选哪个开源 causal 视频模型作为主载体？
+- [x] 选哪个开源 causal 视频模型作为主载体？→ PAN（DF + VSA，训练为主）；候选 MoE 视频 world model（见「方法方向」）
 - [ ] 长程一致性用什么指标衡量？**评测必须包含「回到之前场景」的情况**（例如 LoopBench 或自建 revisit prompt），否则远处的历史用不上，看不出 full / sparse / window 的差别
 - [ ] 只用 teacher forcing 做 finetune 时，长 rollout 是否会漂移？需要先用 training-free 的 top-k 测一个 baseline
 
@@ -164,3 +182,8 @@
 | 2026-10-04 | 只用 VSA v1（128-token block 均值作索引），不用 VSA2 的细粒度路由。 |
 | 2026-10-04 | 写好发给 Tianqi 的项目介绍和问题清单：`docs/intro_for_tianqi.md`。 |
 | 2026-10-04 | 定位为 infra paper：质量对比以引用为主，不自己系统测试；核心实验 = 真实模型 forward 采集 top-k 选择 trace → glass 内存 / 互连模拟（仿照 GlassML 的 routing trace 方法）。算法实现复用 WM-Game-Training 的 VSA hybrid。 |
+| 2026-10-06 | 主模型定为 Wan2.1-T2V-14B（dense，避开 Wan2.2-A14B 的 MoE 双 KV cache），causal checkpoint 用 Krea Realtime 14B；代码载体改为 FastVideo + VSA。WM-Game-Training（PAN）只作为 VSA 参考实现，路径改为 `/mnt/weka/shrd/wm/mingjia/WM-Game-Training`。 |
+| 2026-10-06 | 改回 PAN 作为主模型（组内支持最好、模型更大）；实验假设 remote top-k 5%（配置为 15%），视频长度任意讨论。 |
+| 2026-10-06 | 范围收窄为 DF + VSA，导师更希望做**训练**；Self-Forcing 太小众，不在范围内。 |
+| 2026-10-07 | 完成 PAN DF + VSA 训练的显存实测（10–60 s，8×H200）和 60 s 训练 trace；结论：稀疏省计算不省通信，causal 负载不均衡明显；10 分钟训练在 NVL72 上选对切法即接近理想效率，通信不是瓶颈。详见 `docs/pan_compute_comm_estimate.md`。 |
+| 2026-10-07 | 确立核心问题：*why next-generation world-model training needs a larger, higher-bandwidth scale-up domain*（见文首）。候选方向：MoE 视频 world model + 长视频序列并行，对接 GlassML 的 MoE AllToAll。 |
