@@ -1,8 +1,8 @@
-# 长视频 world model 训练的负载拆解（DF + 稀疏 attention），以及 LLM / VLM RL 后训练的估算
+# 长视频 world model 训练的负载拆解（DF + 稀疏 attention）
 
 > 2026-10-08。给 David / 导师讨论用。
 > 数字来源分三类：**[实测]** 在 8×H200 上跑出来的；**[trace]** 从真实训练 forward 记录的 top-k 选择统计出来的；**[估]** 按公式推算的（用实测校准过）。
-> 复现脚本都在 `.worktrees/topk-trace/experiments/topk_trace/`（分支 `exp/topk-trace`）（第 9 节）。更早的完整记录见 `docs/pan_compute_comm_estimate.md`。
+> 复现脚本都在 `.worktrees/topk-trace/experiments/topk_trace/`（分支 `exp/topk-trace`）（第 8 节）。更早的完整记录见 `docs/pan_compute_comm_estimate.md`。
 
 ## 0. 摘要
 
@@ -10,8 +10,7 @@
 2. **成本集中在一处：稀疏 attention 的远端 K/V 拉取。** 要拉哪些块要等打分后才知道，forward、重算、backward 各一次，每卡每层约 7 GB。
 3. **变成带宽瓶颈的条件是"一个样本需要的卡数超出快的 scale-up 域"**，而不是长度本身。按固定比例做稀疏时，越长越偏算力；按固定预算做稀疏时，计算、显存、带宽都线性增长，此时内存决定一个样本要多少卡。
 4. **CP 会带来结构性的通信偏斜**：连续切 15 卡时，GPU 对之间的最大/平均是 3.6×，和 GlassML 测的 MoE AllToAll 偏斜（3.6–6.3×）同一量级；条纹切能消掉大部分。
-5. **LLM / VLM 的 RL 后训练（GRPO / DAPO 类）的时间大部分在 rollout，而 rollout 受 HBM 带宽和长尾限制**：每个解码步 31 ms 花在读权重和 KV 上，计算只要 3–10 ms；整个 rollout 的时长由最长的那条回答决定。网络通信很小（30B 每卡一个独立副本；235B 在 8 卡副本内的专家 AllToAll 约占 7%）。VLM 的视觉 prompt 很长时，时间转到更新阶段（训练），而训练里的 MoE AllToAll 正是 GlassML 已经证明能加速的部分。
-6. **目前 glass 能明显获益的情形**：预训练中一个样本超出快的域、在普通集群上训练、或检索复用低；RL 中训练阶段的 MoE AllToAll（GlassML 已有结果），以及用更大的快速域把长尾回答切到更多卡上加速（需要低延迟的集合通信，未量化）。
+5. **目前 glass 能明显获益的情形**：一个样本超出快的域、在普通集群上训练、或检索复用低。
 
 ---
 
@@ -135,75 +134,23 @@ trace 估出的 R：每卡 1 个 chunk 约 3，12 个 chunk 约 12.5（固定比
 
 ---
 
-## 6. RL 后训练估算（LLM / VLM，GRPO / DAPO 类）
+## 6. 想请 David / Tianqi 回答的问题
 
-### 6.1 设定（全部为假设，未实测）
-- 结构和 HybridFlow（EuroSys'25）、RLHFuse（NSDI'25）一样：rollout（自回归生成）→ reward（规则验证器或 reward 模型，假设很小）→ 更新（对全部 prompt + 回答做 forward + backward）；
-- 每轮 **512 个 prompt × 16 条回答 = 8192 条序列**（NeMo RL 中 DAPO 的默认设置）；
-- 回答长度长尾：平均 5K token，最长 16K（文献：一批 512 条里 80% 在 3K 以内结束，最慢的 20% 拖到上限）；也算了最长 32K；
-- prompt：LLM 1K；VLM 带图像 8K、带视频 16K（同一组 16 条回答共享 prompt 的 KV）；
-- 模型：GlassML 评测用的 Qwen3-30B-A3B（48 层，4 个 KV head，128 专家 top-8；一张卡放一个 rollout 副本）和 Qwen3-235B-A22B（94 层，4 个 KV head；8 卡一个副本，专家并行）；
-- 解码按 HBM 带宽受限建模：每一步读本卡的权重分片和全部常驻 KV。
-
-### 6.2 每轮负载（GB300 NVL72，最长回答 16K）
-| 模型 | 输入 | 在途 KV（平均 / 按最长预留） | 每卡同时解码 | 每步时间（HBM / 计算） | rollout（总量 / 最长回答） | 更新 | rollout 占比 |
-|---|---|---|---:|---|---|---:|---:|
-| 30B-A3B | LLM，1K | 4.1 / 12.9 TB | 370 条 | 31 / 3.5 ms | 47 / **122 s** | 16 s | **88%** |
-| 30B-A3B | VLM，8K | 4.4 / 13.3 TB | 340 条 | 31 / 3.3 ms | 51 / 122 s | 46 s | 73% |
-| 30B-A3B | VLM 视频，16K | 4.8 / 13.7 TB | 312 条 | 31 / 3.1 ms | 56 / 122 s | 95 s | 56% |
-| 235B-A22B | LLM，1K | 8.0 / 25.3 TB | 191 条 | 31 / 10.1 ms | 91 / 118 s | 97 s | 55% |
-| 235B-A22B | VLM，8K | 8.7 / 26.0 TB | 176 条 | 31 / 9.5 ms | 99 / 118 s | 253 s | 32% |
-| 235B-A22B | VLM 视频，16K | 9.5 / 26.8 TB | 161 条 | 31 / 9.0 ms | 108 / 118 s | 486 s | 19% |
-
-NVL72 可放 KV 的空间约 13 TB。最长回答 32K 时，30B 的 rollout 占比升到 94%（LLM）。**校准**：30B、16K 时 rollout 占 88%，和文献报告的 84–91% 一致。
-
-### 6.3 通信
-| 项 | 量 | 对比 |
-|---|---|---|
-| 解码时的专家 AllToAll（235B，8 卡副本内） | 每步约 2 ms | 每步 31 ms（约 7%） |
-| 30B 解码 | 无（一张卡一个副本） | — |
-| 训练后把新权重同步给 rollout 副本 | 每轮 < 0.1 s | 每轮几分钟 |
-| 更新阶段的 MoE AllToAll | GlassML 已测：生产环境中占迭代 33–68%，glass 端到端 1.18×（几何平均） | — |
-
-### 6.4 结论
-1. **rollout 占主导，且它的瓶颈是 HBM 带宽和长尾，不是网络**：解码每步读权重和 KV（31 ms），计算只占 1/3 到 1/9；整个 rollout 被最长的那条回答拖住（16K token 逐个解码约 120 s，而总工作量只需 47–108 s）。glass 每卡的 HBM 和 B300 一样，所以在这一部分不占优势。
-2. **容量在 NVL72 上不是硬约束**：平均在途 KV 4–9.5 TB，放得下；只有按最长预留（13–52 TB），或者为长尾 / 异步 RL 保留暂停序列的 KV 时才会超出。
-3. **网络能起作用的地方**：
-   - **更新阶段的 MoE AllToAll**：GlassML 的现有结果；VLM 的视觉 prompt 越长，更新占比越高（235B 视频 prompt 时更新占 81%），这部分越重要；
-   - **长尾加速**：最后剩下的少数长回答 batch 很小，每步主要在读权重；把它们切到更多卡上（张量并行）能缩短每步时间，但每层都要做集合通信，**能切多细取决于快速域的规模和通信延迟**。已有 GPU 上的工作（例如 adaptive tensor parallelism 加速长尾、APRIL 部分 rollout），这一点 glass 可能有优势，但**未量化**。
-4. **和 video world model 训练的区别**：LLM RL 的 rollout 是逐 token 解码（访存受限、长尾），视频的 rollout 每步处理整个 chunk（计算量大）；LLM RL 已有大量 infra 工作（HybridFlow、RLHFuse、各种长尾优化），做的人多但也更成熟。
+1. David：GlassML 的模拟器能不能接这里的 trace（逐层的拉取需求矩阵、偏斜）？
+2. David：对比的 baseline 除了 NVL64，能不能加 8 卡节点 + IB 集群？glass 的 8 TB/s 是半双工总量吗？
+3. Tianqi：glass DRAM 的容量、带宽和连接方式（第 4 节"缓存拉取的 K/V"取决于它）。
 
 ---
 
-## 7. 两个方向的对比（明天要定的）
-
-| | A. 长视频预训练（DF + 稀疏 attention） | B. LLM / VLM RL 后训练 |
-|---|---|---|
-| 有没有实测 | **有**：显存 10–60 s、60 s 训练 trace、偏斜 | 没有，全是估算（但 rollout 占比和文献吻合） |
-| GPU 上的已有 infra 工作 | MAGI-1 / MagiAttention、LongLive-2.0、Seedance 1.0 | HybridFlow（EuroSys'25）、RLHFuse（NSDI'25）、大量长尾优化工作 |
-| 主要瓶颈 | NVL72 内是算力；超出快的域后是带宽 | rollout：HBM 带宽和长尾；更新：算力 + MoE AllToAll |
-| glass 明显获益的条件 | 一个样本超出快的域；普通集群；低复用的检索 | 更新阶段的 MoE AllToAll（GlassML 已有）；用更大的快速域加速长尾（未量化） |
-| 和 GlassML 的关系 | 新问题：内容决定的稀疏检索流量 | 直接延伸：同样的模型（Qwen3 MoE），从预训练扩展到 RL |
-| world model 叙事 | 直接（视频 world model） | 间接（VLM 可以算 vision + world 的一部分） |
-
-**想请导师和 David 回答的问题**
-1. 导师：选 A（视频 world model 预训练）还是 B（LLM / VLM RL）？B 和 world model 的关系是否足够？
-2. David：GlassML 的模拟器能不能接 A 的 trace（逐层的拉取需求矩阵、偏斜）？B 的话，能否在现有的 MoE 训练模拟上加 rollout 阶段（解码、长尾）？
-3. David：对比的 baseline 除了 NVL64，能不能加 8 卡节点 + IB 集群？glass 的 8 TB/s 是半双工总量吗？
-4. Tianqi：glass DRAM 的容量、带宽和连接方式（A 中"缓存拉取的 K/V"、B 中"保留长尾序列的 KV"都取决于它）。
-
----
-
-## 8. 局限
+## 7. 局限
 
 - 第 2–5 节的切分方案是**估算**：当前代码的 packed（DF + VSA）路径不支持任何序列并行。
 - 拉取比例在每卡 30 个 chunk 以内实测，100 个是外推；固定预算下的复用度 R 未测。
 - 显存模型里有一个随块数平方增长的项，来源未核实（推测是稀疏 attention 索引按全宽度存储，换成紧凑存储后应为线性）。
 - 算力利用率固定按 45%；没有建模通信和计算的重叠。
-- 第 6 节 RL 的所有参数（batch、长度分布、prompt 长度、副本大小）都是假设；解码按纯访存受限建模，没有考虑 continuous batching 和投机解码；长尾加速的收益未量化。
 - 训练用的 checkpoint 是 10 个 chunk、15% 训的，trace 在 60 个 chunk、5% 下记录。
 
-## 9. 复现
+## 8. 复现
 
 脚本在 `.worktrees/topk-trace/experiments/topk_trace/`（分支 `exp/topk-trace`）：
 
@@ -212,5 +159,4 @@ NVL72 可放 KV 的空间约 13 TB。最长回答 32K 时，30B 的 rollout 占�
 | `step_breakdown.py` | 第 2、3 节（`--U 8 --C 9`；`--U 1 --C 72` 为纯 CP） |
 | `estimate_training.py`、`estimate_sp.py` | 第 5 节的长度和切分扫描 |
 | `analyze_train_trace.py` | 拉取比例、负载不均衡（训练 trace） |
-| `estimate_llm_rl.py` | 第 6 节（`--resp-max 32000` 为最长回答 32K） |
 | `run_df_train.py` / `run_df_train.sh`、`build_60s_samples.py` | 显存实测和训练 trace |
