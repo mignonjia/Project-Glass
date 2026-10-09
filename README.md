@@ -9,7 +9,7 @@
 
 ### 讲法（草案，待导师 / David 确认）
 
-**容量是起因，带宽和延迟是瓶颈。**
+**容量是起因，带宽和延迟是瓶颈。** 应用场景和引文见 `docs/motivation.md`。
 
 1. **容量把 KV 挤出 GPU**：每路 10 分钟的流有 2.7 TB KV，HBM 放不下，只能放到别的卡的 HBM、Grace LPDDR 或 glass DRAM。
 2. **实时性把取数变成带截止时间的问题**：每个 chunk 要跑 44 层 × 5 次 forward = 220 轮"打分 → 取 → 算"，平均每轮约 3 ms；取哪些块打分后才知道，不能提前预取。
@@ -111,8 +111,10 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
 
 | 路径 | 内容 |
 |---|---|
+| `docs/motivation.md` | paper motivation：哪些实时应用需要长历史、现有系统只留几秒、实时把容量变成带宽问题，含可引用原话和预期质疑 |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
+| `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
 | `survey/sparse_attn_video_training.md` | 稀疏 attention × 视频 × 多卡系统文献；最相关：SparSP、MTraining、db-SP |
 | `survey/glass_memory_papers.md` | 玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频内存文献 |
 | `survey/venues_and_timeline.md` | 投稿会议与 deadline（2026-10 至 2027-12） |
@@ -142,3 +144,4 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
 | 2026-10-08 | 向导师汇报训练结果：dense PAN 训练在 NVL72 内受算力限制。**导师确认方向改为 causal model 的实时推理**，训练分析保留作对照。删除 LLM / VLM RL 估算。 |
 | 2026-10-09 | 实时推理估算补充跨步缓存（4 步并集 27.7%）和 NVL72 的 Grace LPDDR5X；讲法定为"容量是起因，带宽和延迟是瓶颈"（草案）。主线不再考虑 MoE。 |
 | 2026-10-09 | 精简文档：三份训练文档合并为 `docs/training_reference.md`（原文在 commit `cc4a3f0`）；推理相关的实测与 trace 移到 `docs/pan_measurements.md`。 |
+| 2026-10-09 | 完成应用场景调研（`survey/causal_video_long_kv_scenarios.md`），整理成 `docs/motivation.md`。 |
