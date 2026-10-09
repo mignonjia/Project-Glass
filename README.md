@@ -19,22 +19,24 @@
 
 对照路线：**只存 latent、每个 chunk 重算选中帧的 KV**（HY-WorldPlay：按相机视野选约 20 帧，几乎不占存储；每个 chunk 先重算 20 帧、再对 4 帧去噪 4 步（约 20 vs 16 帧次 forward），计算约翻倍，记忆只有 20 帧）。PAN VSA 每层、每个 head 按内容选块，必须用每层的 K 打分，所以只能存 KV。
 
-### 初步估算
+### 估算结果（`docs/realtime_inference_estimate.md`）
 
-PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%；数据来源见 `docs/pan_measurements.md`，完整估算待写 `docs/realtime_inference_estimate.md`。
+PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，按所有流都在最后一个 chunk 算；脚本 `estimate_realtime.py`（worktree）。
 
-- 每路流的完整 KV ≈ **2.7 TB**（721 KB/token × 900 chunk × 4096 行），单靠 HBM 至少要 10 张卡；实时所需算力约 4–5 张 GB300（10 分钟末尾的峰值）。
-- 读 KV 的带宽（SF 4 步 trace）：
-  - **每步重读**：每步取约 22.9% 的远端历史 ≈ 585 GB，每路流约 **4.4 TB/s**（每 tile 约 1 TB/s）。
-  - **跨步缓存**：4 步的并集只有 27.7%，每路流约 **1.1 TB/s**（每 tile 约 0.25 TB/s）；代价是每路流约 0.75 TB 的 HBM 缓存。
+- 每路流的完整 KV **2.66 TB**；实时所需算力约 4.6 个 tile（稀疏 attention 读 HBM 受限时约 5 个）。
+- 每次 forward 取 21.8% 的远端历史（577 GB）。读带宽取决于复用：每步重读 4.3 TB/s / 路；同一 chunk 的 4 步共用 1.0 TB/s；再加上相邻 chunk 复用（trace：重叠 63%）0.38 TB/s。复用的代价是每路流约 0.7 TB 的 HBM 缓存。
+- 按 head 切分时每个 tile 只读自己的 KV，互连只传激活（每 chunk 5–8 ms），稳态下不是瓶颈。
 
-| 系统 | 每系统流数 | 卡在哪里 |
-|---|---:|---|
-| NVL72，只用 HBM | 6–8 | **容量**（算力本可支持约 17 路） |
-| NVL72 + Grace LPDDR（17 TB，14 TB/s） | 容量约 13 | **带宽**：每卡只有约 0.19 TB/s，每步重读差约 5 倍，跨步缓存也略不够（待重算） |
-| Glass（85 TB DRAM） | 约 15 | **算力**（容量可放约 39 路），前提是 DRAM 带宽每 tile 约 0.25–1 TB/s |
+| 系统 | 每系统流数 | 只看容量 | 只看算力 | 卡在哪里 |
+|---|---:|---:|---:|---|
+| NVL72，只用 HBM | 5 | 5 | 14 | **容量** |
+| NVL72 + Grace LPDDR（17 TB，每卡 0.19 TB/s） | 9 | 11 | 14 | **带宽 + HBM 缓存空间** |
+| Glass + 85 TB DRAM（每 tile 1 TB/s） | 11–12 | 36 | 12 | **算力**（64 个 tile） |
 
-glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
+- glass 的主要收益是容量；5% 比例选块时 attention 随历史增长，glass 很快卡算力，收益 1.3×（vs Grace）/ 2.4×（vs 只用 HBM）。
+- 固定选块预算（每个 query 看 20 个 chunk）时：10 分钟 21 / 10 / 5 路，30 分钟 12 / 3 / 1 路，60 分钟 6 / 1 / 0 路（glass / Grace / 只用 HBM）。
+- glass DRAM 每 tile 0.1 TB/s（多路流交替）到 2 TB/s（每组只服务一路流）可以到算力上限。
+- ⚠️ 对讲法的影响：做好复用后带宽需求不高，"带宽是瓶颈"只对不复用或 Grace 成立。更准确的是"容量是起因，之后是 HBM / DRAM 调度问题"。待和导师 / David 讨论。
 
 ## 背景：为什么是 glass
 
@@ -64,7 +66,7 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
   - 实时推理用 SF 4 步 checkpoint：`WM-Production/outputs/sf400-integ-f31474c`（代码 commit `f31474c`）。
   - DF checkpoint：`yiyan_recording10s_w3_remote15_1k_v1`（代码 commit `5a5544a`）。
 - **代码**：`/mnt/weka/shrd/wm/mingjia/WM-Game-Training`。`vsa/hybrid.py`：窗口 + 远端 top-k 选择；`vsa/DESIGN.md`：压缩分支 + 选择分支。
-- **实验代码**：分支 `exp/topk-trace`，目录 `experiments/topk_trace/`（trace hooks、分析和估算脚本）。⚠️ 目前在服务器上，还没 push 到 origin。
+- **实验代码**：分支 `exp/topk-trace`，目录 `experiments/topk_trace/`（trace hooks、分析和估算脚本）。只留在服务器上，不 push；origin 只同步 main。
 
 ## 方法原则
 
@@ -80,14 +82,15 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
 
 ## 近期计划：11 月 review（实时推理）
 
-- [ ] Tianqi：glass DRAM 每 tile 的带宽、延迟和连接方式（每 tile 需约 1 TB/s（每步重读）或约 0.25 TB/s（跨步缓存））
+- [ ] Tianqi：glass DRAM 每 tile 的带宽、延迟和连接方式（每 tile 需 0.1–2 TB/s，取决于调度；64 KiB 粒度的效率；光路重配置时间）
 - [ ] 用 PAN SF + VSA 实测：720p、尽量长的流，每 chunk 每层的延迟、显存、有 / 无跨步缓存的 KV 读取量
-- [ ] 多路流叠加的取数偏斜（8 个样本的 trace 当作 8 路流）
-- [ ] NVL72 基线加入 Grace LPDDR5X（容量 / 带宽），重算每系统流数
-- [ ] 写 `docs/realtime_inference_estimate.md`：视频长度、步数、top-k 比例 vs 每系统流数、每 chunk 延迟
+- [x] 多路流叠加的取数偏斜（8 个样本当作 8 路流：同步时峰值 / 均值 2.3，错开后约 1.4）
+- [x] NVL72 基线加入 Grace LPDDR5X（容量 / 带宽），重算每系统流数
+- [x] 写 `docs/realtime_inference_estimate.md`：视频长度、top-k 比例 / 固定预算 vs 每系统流数、每 chunk 延迟
+- [ ] 问 PAN / VSA 的人：长视频用比例选块还是固定预算（决定 glass 收益是 1.3× 还是 2–6×）
+- [ ] 720p 实测选块并集（448p 外推约 33%）和跨 chunk 复用
 - [ ] 验证"每步取约 22% 远端历史"能否从 60 s 外推到 10 分钟
 - [ ] 可选对照：HY-WorldPlay 4 步 480p 模型，测每 chunk 延迟和重算占比
-- [ ] 把 `exp/topk-trace` push 到 origin
 - [ ] David：GlassML 模拟器能否接推理 trace
 - [ ] 投稿：DAC 2027（约 11/18）是否还投
 
@@ -112,6 +115,7 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
 | 路径 | 内容 |
 |---|---|
 | `docs/motivation.md` | paper motivation：哪些实时应用需要长历史、现有系统只留几秒、实时把容量变成带宽问题，含可引用原话和预期质疑 |
+| `docs/realtime_inference_estimate.md` | 实时推理估算：每系统流数、容量 / 算力 / 带宽上限、DRAM 带宽扫描、视频长度扫描、trace 里的放置统计 |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
@@ -145,3 +149,4 @@ glass DRAM 每 tile 的带宽是**要问 Tianqi 的关键数字**。
 | 2026-10-09 | 实时推理估算补充跨步缓存（4 步并集 27.7%）和 NVL72 的 Grace LPDDR5X；讲法定为"容量是起因，带宽和延迟是瓶颈"（草案）。主线不再考虑 MoE。 |
 | 2026-10-09 | 精简文档：三份训练文档合并为 `docs/training_reference.md`（原文在 commit `cc4a3f0`）；推理相关的实测与 trace 移到 `docs/pan_measurements.md`。 |
 | 2026-10-09 | 完成应用场景调研（`survey/causal_video_long_kv_scenarios.md`），整理成 `docs/motivation.md`。 |
+| 2026-10-09 | 完成实时推理估算（`docs/realtime_inference_estimate.md`）：glass 的主要收益是容量；做好跨步 / 跨 chunk 复用后 DRAM 带宽需求为每 tile 0.1–2 TB/s；收益大小取决于比例选块还是固定预算。讲法待讨论。 |
