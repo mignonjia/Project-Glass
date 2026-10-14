@@ -116,6 +116,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 |---|---|
 | `docs/motivation.md` | paper motivation：哪些实时应用需要长历史、现有系统只留几秒、实时把容量变成带宽问题，含可引用原话和预期质疑 |
 | `docs/realtime_inference_estimate.md` | 实时推理估算：每系统流数、容量 / 算力 / 带宽上限、DRAM 带宽扫描、视频长度扫描、trace 里的放置统计 |
+| `docs/realtime_profile.md` | 实测：LingBot-World v2 14B（8×H200，SP、FA4）和 Cosmos-H-Dreams 2B 的长 KV 实时推理——完整历史 vs sliding window vs 存全量 KV + 选块、SP 通信、容量层取数带宽 |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
@@ -150,3 +151,5 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | 2026-10-09 | 精简文档：三份训练文档合并为 `docs/training_reference.md`（原文在 commit `cc4a3f0`）；推理相关的实测与 trace 移到 `docs/pan_measurements.md`。 |
 | 2026-10-09 | 完成应用场景调研（`survey/causal_video_long_kv_scenarios.md`），整理成 `docs/motivation.md`。 |
 | 2026-10-09 | 完成实时推理估算（`docs/realtime_inference_estimate.md`）：glass 的主要收益是容量；做好跨步 / 跨 chunk 复用后 DRAM 带宽需求为每 tile 0.1–2 TB/s；收益大小取决于比例选块还是固定预算。讲法待讨论。 |
+| 2026-10-10 | 实测 LingBot-World v2 14B 和 Cosmos-H-Dreams（`docs/realtime_profile.md`）：完整历史 dense 做不到实时（120 s 时慢 4.5 倍）；选块恢复实时但每卡要存 74 GB KV；SP 通信每 chunk 约 70 ms、不随历史增长；CPU 内存取数每卡约 28 GB/s。PAN 不再实测。 |
+| 2026-10-14 | 在 LingBot 14B 上接 Light Forcing 选块 + FA4 块稀疏 kernel（SP8，完整 KV）：60 s 历史每 chunk 0.96 s（dense 2.65 s），KV 仍线性增长；同一模型下 VSA 式选块的 chunk 间重合约 70%（与训练过 VSA 的 PAN 一致），Light Forcing 式约 30%，locality 由选块策略决定。见 `docs/realtime_profile.md` 第 3 节。 |
