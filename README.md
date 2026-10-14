@@ -117,6 +117,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | `docs/motivation.md` | paper motivation：哪些实时应用需要长历史、现有系统只留几秒、实时把容量变成带宽问题，含可引用原话和预期质疑 |
 | `docs/realtime_inference_estimate.md` | 实时推理估算：每系统流数、容量 / 算力 / 带宽上限、DRAM 带宽扫描、视频长度扫描、trace 里的放置统计 |
 | `docs/realtime_profile.md` | 实测：LingBot-World v2 14B（8×H200，SP、FA4）和 Cosmos-H-Dreams 2B 的长 KV 实时推理——完整历史 vs sliding window vs 存全量 KV + 选块、SP 通信、容量层取数带宽 |
+| `docs/attn_trace.md` | 给硬件建模的逻辑 attention trace：LingBot 14B 完整历史 KV，每 chunk / 去噪步 / 层 / head / query 块 attend 到的 64 KB KV 块（VSA 式、LF 式两种选块，120 s），数据在 `data/attn_trace/`（Git LFS） |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
