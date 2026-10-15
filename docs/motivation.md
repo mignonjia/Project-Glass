@@ -63,6 +63,7 @@
 - **Dreamer 4**："Inference speed of block-causal transformer architectures is limited both by the FLOPs of the MLPs and the memory bandwidth needed to access the KV cache of a long context to attend into" **[原文核对]**
 - **Matrix-Game 3.0**：按相机视野检索历史时，检索不放在 GPU 上，速度从约 40 fps 降到 6.6 fps，检索在关键路径上。
 - **Context-as-Memory**：上下文从 1 帧加到 30 帧，帧率从 1.60 降到 0.79 fps。
+- **OmniMem**（arXiv 2605.30519，Wan2.1-1.3B + Self-Forcing，按 head 稀疏检索）：保留完整历史 KV，"The full-resolution KV cache is organized as per-head, chunk-level tensors"；放不下的部分 "live in pinned host memory and are reloaded through PCIe when their chunks are selected"，GPU 上只用 LRU 留 7 个 chunk。它把跨 query、跨 head 选块的并集叫 "union explosion"："Although the method remains sparse in computation, it can still require a large KV memory footprint for the current AR step"。717 帧时比完整历史 attention 省 3.3× 显存、快 2.7×。这正是我们的 workload：完整 KV 存在容量层，按内容稀疏取回，瓶颈是取数而不是计算。
 - **我们的 PAN trace**：每个 720p chunk 要在 0.67 s 内跑 220 轮"打分 → 取 → 算"，每轮约 3 ms；每步取约 22.9% 的远端历史，每路流约 4.4 TB/s（跨步缓存后约 1.1 TB/s）。
 
 ### 5. 访问由内容决定，不能提前预取
@@ -73,6 +74,8 @@
 - **多人**：一个玩家的画面要用到其他玩家建立的历史（MIRA、MultiGen、Agora-1）。
 - **机器人 / 驾驶**：被遮挡的物体或车辆重新出现（Mem-World、Ctrl-World 按位姿检索、ZYT-World 跨轨迹回访）。
 - **数字人**：按 SigLIP 内容选关键帧（InteractiveAvatar）。
+
+- **按 head 选块不能省**：OmniMem 把选块在 12 个 head 间共享，"significantly degrades all metrics"，结论是 "different attention heads attend to genuinely different historical regions"；top-K 从 4 加到 12 质量继续上升（CLIP 26.53 → 27.44），预算越大越好。块只有 30 token（每 head K+V 约 15 KB），我们实测 PCIe 上 29 KB 的碎块只有约 5 GB/s，15 KB 只会更低。
 
 这与 PAN VSA 的"每层、每个 head 打分后才知道取哪些块"同类，也是取数需求运行时确定、带偏斜的原因（README 讲法第 2–3 点）。
 
