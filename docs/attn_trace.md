@@ -57,3 +57,16 @@ fetch = np.unique(b[2, 10, 7])               # 对 query 块取并集 = 这一�
 和 `realtime_profile.md` 第 3 节的统计一致（VSA 式每 forward 远端 37.8–40.3%，LF 式 6.8% → 3.7%）。chunk 100 与之前每 20 chunk dump 一次的运行逐位相同。
 
 LingBot 是用 sliding window 训练的，没训练过稀疏；这里的选块来自模型自己的 q·k 分数，作为访问模式使用，不代表画质。
+
+## 4. 复用与算术强度（Tianqi 对 trace 的分析，2026-10-14）
+
+Tianqi 用这份 trace 统计了每个取回的 KV 块在一次 forward 内被多少个 query 块用到（复用率 = 各 query 块独立选中次数之和 / 并集）。
+
+![复用率随时间、去噪步、层](figures/attn_trace_reuse_rate.png)
+
+![远端 KV 复用率热力图（层 × chunk，每个去噪步）](figures/attn_trace_reuse_heatmap.png)
+
+- **远端 KV 每块平均被约 6–7 个 query 块复用**（VSA 式约 6×，LF 式约 7–8×），基本不随时间和去噪步变化。和第 3 节一致：每个 query 块选 5%，一步并集约 40%，48 × 5% / 40% ≈ 6。
+- **层上有条带**：每层的复用率在 120 s 里几乎不变，层与层之间不同，可以按层静态分配带宽或放置。LF 式在 chunk 33 左右有一个台阶，VSA 式没有，原因没查。
+- **算术强度**：一对（query 块，KV 块）计算 4 × 128³ ≈ 8.4 MFLOP，读 64 KB，AI = 128 FLOP/B，和 KV 长度无关。按 FA4 约 650 TFLOP/s，不合并时需约 5 TB/s 读带宽；一步内合并 48 个 query 块的请求后 AI 约 770（约 0.85 TB/s）；再在 5 次 forward 间缓存（一 chunk 的并集只比单步多约 17%）AI 约 3300（约 0.2 TB/s）。所以 far memory 一侧合并请求有好处。
+- 注意 VSA 式按比例选 5%，选中的块数随历史线性增长：AI 不变，但计算量会涨（10 分钟时 attention 约 1 s）。要让计算有上限需改成固定 k。

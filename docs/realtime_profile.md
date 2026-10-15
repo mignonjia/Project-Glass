@@ -3,7 +3,7 @@
 > 目的：在开源的实时 causal world model 上实测"长历史 KV"的代价，补充 `realtime_inference_estimate.md` 的估算。sliding window 不需要大 KV 存储，所以只作基线；重点是**完整历史**和**存全量 KV + 选块**两种情形。
 > 机器：1 台 8×H200（141 GB HBM，NVLink），attention 用 **FlashAttention 4**（`flash-attn-4` 4.0.0b8）。
 > 代码在 worktree `exp/realtime-profile` 的 `experiments/realtime_profile/`（`profile_lingbot.py`、`kv_select.py`、`lf_select.py`、`profile_cosmos.py`、`bench_fetch.py`、`plot_sp_sparse_workload.py`），原始数据在其 `runs/`。
-> 2026-10-10 测第 1–8 节；2026-10-14 补第 3 节（块稀疏 attention + SP 的 workload、选块策略与 locality）。
+> 2026-10-10 测第 1–5、7–9 节；2026-10-14 补第 3 节（块稀疏 attention + SP 的 workload、选块策略与 locality）；2026-10-15 补第 6 节（存 KV vs 存 latent 重算：速度和画质）。
 
 ## 结论
 
@@ -14,7 +14,8 @@
 5. **把冷 KV 放到容量层，带宽和粒度是关键。** H200 节点上 CPU 内存 → GPU 实测每卡约 28 GB/s（整机 223 GB/s），按 head 取 29 KB 的碎块只有约 5 GB/s。LingBot 选 5% 时，120 s 历史每卡每秒要取约 3.4 GB，10 分钟要约 17 GB/s，用 PCIe 已经接近预算。
 6. **块稀疏 attention（Light Forcing 的选块 + FA4 块稀疏 kernel）让完整历史也能实时，但 KV 照样线性增长。** 14B、SP8、历史 60 s：每 chunk 0.96 s（dense 2.65 s），attention kernel 只要 38 ms 且不随历史变化；选块要扫全部历史的块均值索引，随历史线性增长（60 s 时 52 ms）。每卡 KV 仍是 0.157 GB / latent 帧，10 分钟 377 GB。
 7. **locality 主要由选块策略决定，不是由有没有训练过稀疏决定。** 同一个没训练过稀疏的 LingBot 14B：VSA 式（按比例直接选块）和上一个 chunk 重合约 70%、相邻 forward 新增约 7%，和训练过 VSA 的 PAN 一致（63–65%、约 7%）；Light Forcing 式（先选帧再选块）只有约 30–38%、约 16%。
-8. **小模型（Cosmos-H-Dreams 2B，机器人）**：单卡 120 s 历史仍实时（0.82 s / 1.2 s 预算），但 10 分钟 KV 约 200 GB，单卡放不下；attention 每多 1 帧历史多 1.9 ms，约 3.4 分钟后单卡超预算。
+8. **长期记忆要存 KV，不能只存 latent 重算。** 按相机检索记忆帧时，重算 8 帧每 chunk 多 283 ms（20 帧 757 ms），从 CPU 内存取存好的 KV 只要 46–109 ms。画质上（LingBot-Fast 14B，22.5 s 往返转头，2 个 seed），回到超出窗口的旧视角时：存 KV 检索 PSNR 16.1，完整 KV 15.5，重算 11.4–12.5，和滑动窗口 11.8 一样，即重算的 KV 带不来记忆：深层 KV 含有生成时的上下文，重算还原不了（中间层余弦相似度约 0.7）。见第 6 节。
+9. **小模型（Cosmos-H-Dreams 2B，机器人）**：单卡 120 s 历史仍实时（0.82 s / 1.2 s 预算），但 10 分钟 KV 约 200 GB，单卡放不下；attention 每多 1 帧历史多 1.9 ms，约 3.4 分钟后单卡超预算。
 
 ## 1. 模型与设置
 
@@ -158,7 +159,56 @@ HBM → HBM 用同样的逐块拷贝，29 KB 时也只有约 4 GB/s：碎块受�
 | 120 s | 74 GB | 约 3.4 GB | 约 0.15 s，预算内 | 约 0.7 s，吃光预算 |
 | 10 min | 约 370 GB | 约 17 GB | 约 0.74 s，加计算超预算 | 不可能 |
 
-## 6. Cosmos-H-Dreams 2B（单卡，FA4，CUDA graph）
+## 6. 长期记忆：存 KV 还是存 latent 重算 [实测]
+
+按相机位姿检索记忆帧时（WorldKV、HY-WorldPlay、Matrix-Game 3.0 一类），被检索帧的 KV 有两种来源：存下每个 chunk 的 KV、用时取回（WorldKV），或只存干净 latent、用时再过一遍模型重算（HY-WorldPlay 式）。两者都要存全部历史，区别在存多大（KV 每秒视频约 5 GB，latent 约 0.8 MB）和每 chunk 多花多少。
+
+### 6.1 速度（LingBot v2 14B，SP8，512×768，最近 12 帧 + M 个记忆帧，最后 10 个 chunk 平均）
+
+| 记忆帧的来源 | M | 每 chunk | 比纯窗口多 | 取 / 写回 / 重算 | 每卡 bank |
+|---|---:|---:|---:|---|---:|
+| 只有 12 帧窗口 | 0 | 1016 ms | — | — | 0 |
+| 存 KV，bank 在 HBM | 8 | 1034 ms | +18 | 取 8 ms（1.26 GB） | 37.7 GB |
+| 存 KV，bank 在 CPU 内存 | 8 | 1073 ms | +57 | 取 46 ms + 写回 35 ms | 37.7 GB（CPU） |
+| 存 latent，重算 | 8 | 1329 ms | +313 | 重算 283 ms | 0 |
+| 存 KV，bank 在 HBM | 20 | 1058 ms | +42 | 取 18 ms（3.15 GB） | 37.7 GB |
+| 存 KV，bank 在 CPU 内存 | 20 | 1485 ms | +469 | 取 109 ms + 写回 28 ms，其余见下 | 37.7 GB（CPU） |
+| 存 latent，重算 | 20 | 1796 ms | +780 | 重算 757 ms | 0 |
+
+- 记忆帧在 chunk 第一次 forward 时取一次，4 个去噪步和 commit 共用。取数约 27–29 GB/s，即第 5 节的大块 PCIe 带宽。
+- 重算随 M 线性增长（每帧约 35–38 ms），M = 8 已超出 1 s 预算；取 KV 在 HBM 里几乎免费，从 CPU 内存取也只要 46–109 ms。
+- CPU bank、M = 20 那组比"取 + 写回"多出约 330 ms：5 次 forward 都慢约 80 ms，主要体现在 all-to-all 等待（248 ms，HBM bank 时 67 ms）。原因没查清（可能是 8 卡共 302 GB pinned 内存下的主机侧争用），GPU 回收前没来得及复测。
+
+### 6.2 画质：回到同一视角时是否一致
+
+用 WorldKV 的代码和设置（attention 用它自带的实现，不是 FA4，不影响画质对比）：LingBot-World-Fast v1 14B（SP4，每组 4 张卡，两组并行），464×848，361 帧（22.5 s），相机轨迹 `R_L_R_L_R_L90_360` 只转不移（偏航 0↔90° 来回 3 趟）。除完整 KV 外，注意力预算都是 27 个 latent 帧（108 帧视频，约 6.75 s）。重算两种都是我们加的（WorldKV 本地分支 `glass-recompute`，`--retrieval_source`）：检索到的 chunk 用干净 latent 在 t=0 联合过一遍模型，位置放在和"存 KV + RoPE 校正"相同的虚拟位置；`recompute_sink` 再把首帧所在 chunk 一起放进去当上下文。
+
+指标（`eval_revisit.py`）：相机不平移，所以转回某个角度时画面应和第一趟同角度的帧相同。对第一趟之后的每帧，找第一趟里偏航差 ≤ 1.5° 的帧，算 PSNR / SSIM，按两帧相隔是否超过窗口分组。
+
+| 配置 | 相隔 > 窗口：PSNR（seed 42 / 43） | 相隔 > 窗口：平均 PSNR | 相隔 > 窗口：平均 SSIM | 相隔 ≤ 窗口：平均 PSNR |
+|---|---:|---:|---:|---:|
+| 滑动窗口 27 帧 | 12.35 / 11.23 | 11.8 | 0.325 | 17.3 |
+| 完整 KV | 15.98 / 14.95 | 15.5 | 0.411 | 17.3 |
+| **存 KV + 按相机检索 18 帧**（WorldKV） | 16.40 / 15.83 | **16.1** | **0.426** | 17.0 |
+| 存 latent，重算检索的 18 帧 | 12.48 / 12.42 | 12.5 | 0.344 | 17.4 |
+| 存 latent，重算时加首帧 chunk | 11.16 / 11.65 | 11.4 | 0.320 | 17.5 |
+
+每组 210 帧相隔超过窗口、60 帧在窗口内。WorldKV 论文 Table 1 的对应值是滑动窗口 12.18、完整 KV 15.90、WorldKV 15.66。
+
+- **重算等于没有长期记忆**：同样检索 18 帧，存 KV 是 16.1，重算是 11.4–12.5，和滑动窗口（11.8）一样。参照帧还在窗口内时所有配置都在 17 左右，差别全部来自长期记忆。
+- **原因：深层 KV 带着生成时的上下文。** 直接比较同一 chunk 重算的 V 和存下的 V（V 不带 RoPE），余弦相似度：
+
+| 层 | 0 | 10 | 20 | 30 | 39 |
+|---|---:|---:|---:|---:|---:|
+| 只用检索帧重算 | 1.000 | 0.86–0.91 | 0.73–0.81 | 0.68–0.76 | 0.89–0.91 |
+| 加首帧 chunk（第 8 个 chunk 起） | 1.000 | 0.87–0.91 | 0.75–0.81 | 0.69–0.74 | 0.90–0.92 |
+
+  第 0 层完全相同，说明输入（latent、相机、时间步、位置）和当初一致；之后每层经过 attention，把当初窗口里的内容混进了 KV，只拿 latent 重算还原不了。加首帧只在最早的检索点有效（chunk 4：第 20 层 0.73 → 0.94），之后每个 chunk 当初的上下文还包括它自己的窗口。要精确还原就得递归重算整段历史。
+- **重算也更慢**：整段生成（含约 100 s 加载）存 KV 387 s，重算 420–445 s，与 6.1 节一致。
+
+**含义**：不专门为重算训练的模型（这里是 LingBot，WorldKV 也不训练），"只存 latent"既慢又没有长期记忆，长期记忆必须存 KV。HY-WorldPlay 这类训练时就用重算记忆的模型可能学会利用重算的 KV，这里没测。
+
+## 7. Cosmos-H-Dreams 2B（单卡，FA4，CUDA graph）
 
 | KV 窗口（latent 帧） | 对应历史 | KV | 稳态每 block（含 VAE 解码） | 峰值显存 |
 |---:|---:|---:|---:|---:|
@@ -169,7 +219,7 @@ HBM → HBM 用同样的逐块拷贝，29 KB 时也只有约 4 GB/s：碎块受�
 - 历史每多 1 个 latent 帧，attention 多约 1.9 ms；单卡完整历史约 3.4 分钟后超出 1.2 s 预算，约 6.7 分钟后显存放不下；10 分钟 KV 约 200 GB。
 - 机器人这类小模型单卡就能实时，但长历史同样需要大于单卡的容量。
 
-## 7. 对 glass 论点的含义
+## 8. 对 glass 论点的含义
 
 - **容量是硬约束**：要实时就得选块，要选块就得存全量 KV。LingBot 14B 每秒视频 4.9 GB KV，2 分钟用满 8 张 H200，10 分钟约 3 TB；Cosmos 2B 10 分钟约 200 GB。
 - **SP 的互连流量小且固定**：按 head 切分后互连只传激活（每 chunk 约 5 GB / 卡），不随历史增长。glass 光互连的作用不在这里，而在**容量层的取数**和**多路流共享容量池**。
@@ -178,15 +228,16 @@ HBM → HBM 用同样的逐块拷贝，29 KB 时也只有约 4 GB/s：碎块受�
 - **选块策略决定能否复用光路和缓存**：按比例直接选块（VSA 式）chunk 间重合约 70%，适合"建好光路、缓存上一 chunk 的块"；先选帧再选块（Light Forcing 式）只有约 30%。
 - 对应估算模型的输入：本次实测的选块并集、复用率和单 chunk 的计算时间可以替代 PAN trace 的值（见第 2、3 节表）。
 
-## 8. 局限
+## 9. 局限
 
 - LingBot 只训练过 18 帧窗口，完整历史和选块下画质不保证；选块是推理时加的（没训练过）。第 3.3 节显示，同一策略下它的 locality 和训练过 VSA 的 PAN 一致，但其他统计量（如选中位置分布）仍可能不同。
 - 选块的打分和 gather 没优化（约 100 ms），按相机选用的是合成的匀速转圈轨迹。
-- 容量层取数只测了带宽，没把取数接进生成循环端到端测（KV 仍然全部在 HBM）。
+- 容量层取数只在第 6 节的"按相机检索记忆帧"里接进了生成循环（整帧大块）；按内容选块的细粒度取数没有端到端测（KV 仍然全部在 HBM）。
+- 第 6.2 节画质只有一张图、一条 22.5 s 的轨迹、两个 seed；重算是我们的实现，模型没为此训练过。
 - Cosmos 用 CUDA graph 时没法单独计 attention 时间，attention 斜率来自 graph 捕获前的 block。
 - 单节点、单路流；多路流叠加没测。
 
-## 9. 复现
+## 10. 复现
 
 在 worktree `.worktrees/realtime-profile/experiments/realtime_profile/` 下（`source env.sh`，只用 debug node 上空闲的卡）：
 
@@ -205,5 +256,10 @@ bash run_sweep.sh l14b_lf_sp8_time 8 $R --select lightforcing
 bash run_sweep.sh l14b_pol_vsa_sp8 8 $R --select lightforcing --lf-policy vsa --vsa-ratio 0.05 --sel-stats 1 --dump-every 20
 bash run_sweep.sh l14b_pol_lf_sp8 8 $R --select lightforcing --lf-policy lf --sel-stats 1 --dump-every 20
 python bench_lf_select.py                                                                   # 选块开销 / 重编译
+# 第 6 节：存 KV vs 重算
+R="--model 14b --height 512 --width 768 --latent-frames 240 --window 12 --split-a2a 1"
+bash run_sweep.sh l14b_mem_kvcpu_m8 8 $R --memory kvbank --bank cpu --mem-frames 8      # --bank gpu / --memory recompute
+bash runs/quality/main.sh; bash runs/quality/wave2.sh                                     # 画质（WorldKV 分支 glass-recompute）
+python eval_revisit.py <poses.npy> 108 name=video.mp4 ...
 python plot_sp_sparse_workload.py --out /mnt/weka/home/mingjia.huo/Project-Glass/docs/figures/sp_sparse_workload   # 图（写到 main 的 docs/）
 ```
