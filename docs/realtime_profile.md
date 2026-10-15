@@ -181,7 +181,7 @@ HBM → HBM 用同样的逐块拷贝，29 KB 时也只有约 4 GB/s：碎块受�
 
 ### 6.2 画质：回到同一视角时是否一致
 
-用 WorldKV 的代码和设置（attention 用它自带的实现，不是 FA4，不影响画质对比）：LingBot-World-Fast v1 14B（SP4，每组 4 张卡，两组并行），464×848，361 帧（22.5 s），相机轨迹 `R_L_R_L_R_L90_360` 只转不移（偏航 0↔90° 来回 3 趟）。除完整 KV 外，注意力预算都是 27 个 latent 帧（108 帧视频，约 6.75 s）。重算两种都是我们加的（WorldKV 本地分支 `glass-recompute`，`--retrieval_source`）：检索到的 chunk 用干净 latent 在 t=0 联合过一遍模型，位置放在和"存 KV + RoPE 校正"相同的虚拟位置；`recompute_sink` 再把首帧所在 chunk 一起放进去当上下文。
+用 WorldKV 的代码和设置（attention 用它自带的实现，不是 FA4，不影响画质对比）：LingBot-World-Fast v1 14B（SP4，每组 4 张卡，两组并行），464×848，361 帧（22.5 s），相机轨迹 `R_L_R_L_R_L90_360` 只转不移（偏航 0↔90° 来回 3 趟）。除完整 KV 外，注意力预算都是 27 个 latent 帧（108 帧视频，约 6.75 s）。重算两种都是我们加的（私有 fork `mignonjia/WorldKV` 的 `glass-recompute` 分支，`--retrieval_source`）：检索到的 chunk 用干净 latent 在 t=0 联合过一遍模型，位置放在和"存 KV + RoPE 校正"相同的虚拟位置；`recompute_sink` 再把首帧所在 chunk 一起放进去当上下文。
 
 指标（`eval_revisit.py`）：相机不平移，所以转回某个角度时画面应和第一趟同角度的帧相同。对第一趟之后的每帧，找第一趟里偏航差 ≤ 1.5° 的帧，算 PSNR / SSIM，按两帧相隔是否超过窗口分组。
 
@@ -259,7 +259,7 @@ python bench_lf_select.py                                                       
 # 第 6 节：存 KV vs 重算
 R="--model 14b --height 512 --width 768 --latent-frames 240 --window 12 --split-a2a 1"
 bash run_sweep.sh l14b_mem_kvcpu_m8 8 $R --memory kvbank --bank cpu --mem-frames 8      # --bank gpu / --memory recompute
-bash runs/quality/main.sh; bash runs/quality/wave2.sh                                     # 画质（WorldKV 分支 glass-recompute）
+bash runs/quality/main.sh; bash runs/quality/wave2.sh                                     # 画质（mignonjia/WorldKV 分支 glass-recompute）
 python eval_revisit.py <poses.npy> 108 name=video.mp4 ...
 python plot_sp_sparse_workload.py --out /mnt/weka/home/mingjia.huo/Project-Glass/docs/figures/sp_sparse_workload   # 图（写到 main 的 docs/）
 ```
