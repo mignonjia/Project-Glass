@@ -28,6 +28,7 @@
 - **Figures:** `kv_vs_latent_quality.png` (main), `kv_vs_latent_frames.png` (visual)
 - **Setup:** WorldKV code, LingBot-World-Fast 14B, 361 frames (22.5 s). The camera turns 0→90→0° three times with no translation. Every config has the same 27-latent-frame budget, except full KV.
 - **Metric:** compare each frame with its first visit at the same angle, and look only at frames whose first visit has left the window.
+  - The same view comes back every ~4 s, so this measures **drift from the original scene** over repeated looks. It does not test a long absence; that needs a turn-away trajectory (next step).
 - **Result** (PSNR, 2 seeds):
 
   | Config | PSNR |

@@ -58,6 +58,8 @@
 
 一张 GB300 有 288 GB HBM，NVL72 合计约 20 TB：**单路流就要占多张卡，多路流时 NVL72 先撞容量上限**（README 估算：只用 HBM 时每系统 6–8 路）。
 
+- **只存 latent 不够（我们实测）**：存下的 KV 带着生成时的上下文，只存 latent 再重算还原不了。同一帧重算的 V 和存的 V 在第 0 层完全相同（余弦 1.000），到中间层只剩约 0.7（第 20 / 30 层 0.76 / 0.71）。用重算的记忆，转回同一视角时和最初画面的一致性和没有记忆一样（PSNR 12.5，滑动窗口 11.8，存 KV 16.1）。所以要长期记忆就得存 KV，容量需求是 KV 的（每秒视频约 5 GB），不是 latent 的（约 0.8 MB）。见 `realtime_profile.md` 第 6 节。
+
 ### 4. 实时把容量问题变成带宽问题
 
 - **Dreamer 4**："Inference speed of block-causal transformer architectures is limited both by the FLOPs of the MLPs and the memory bandwidth needed to access the KV cache of a long context to attend into" **[原文核对]**
@@ -98,7 +100,7 @@ MoC（64 s，约 180k token）、LCT（约 3 分钟，causal 版保留全部 KV�
 |---|---|
 | 压缩历史就够了（FramePack、PackForcing、Yume 1.5） | 压缩是有损的：Self-Forcing++ 写长时间被遮挡的区域会"content divergence"；GigaWorld 的 FVD 数据显示记忆越完整，长程质量越好。压缩路线和我们正交：压缩后的 KV 同样随时长线性增长 |
 | 用显式 3D（Marble、Voyager、RTFM） | 只适用于静态场景（RTFM、Marble 原文都限定静态）；游戏状态、动态物体、多人状态放不进 3D 重建 |
-| 只存 latent、按需重算 KV（HY-WorldPlay） | 每个 chunk 重算约 20 帧，计算约翻倍，记忆也只有约 20 帧；PAN VSA 每层、每个 head 按内容选块，必须用每层的 K 打分，只能存 KV（README 对照路线） |
+| 只存 latent、按需重算 KV（HY-WorldPlay） | 每个 chunk 重算约 20 帧，计算约翻倍，记忆也只有约 20 帧；PAN VSA 每层、每个 head 按内容选块，必须用每层的 K 打分，只能存 KV（README 对照路线）。**我们实测**（`realtime_profile.md` 第 6 节）：重算的 KV 和当初存下的 KV 不等价：同一帧、同样的 latent / 相机 / 位置 / 时间步，第 0 层 V 余弦相似度 1.000，第 10 / 20 / 30 / 39 层降到 0.89 / 0.76 / 0.71 / 0.90，因为深层 KV 混进了生成时的上下文，只拿 latent 还原不了；结果是不专门训练的模型用重算记忆，回访一致性和滑动窗口一样（PSNR 12.5 对 11.8，存 KV 16.1），而且更慢（14B SP8 重算 8 帧 +283 ms，取 KV 46 ms） |
 | GQA / MLA 能把 KV 缩小 | 只是常数倍（4–8×）：10 分钟 720p 仍是每路 0.33–0.67 TB，超过一张 GB300 的 288 GB，且随时长线性增长 |
 | 便宜的数字人根本不用长历史（AVTR-1 用 0.64 MB 运动状态） | 对，所以数字人不作为主场景；主场景是游戏 / 探索 / 多人 / 机器人 / 驾驶 / RL，它们的历史无法由输入或参考图提供 |
 | SSM 用常数大小的状态（Long-Context SSM world model） | 架构路线不同，长程检索精度仍是开放问题（WorldTrace 等）；我们针对的是今天主流的 attention + KV 的 causal DiT |
