@@ -70,16 +70,20 @@
 - **Figures:** `sp_sparse_workload.png`, `memory_time.png`
 - **Dense full history** is compute-bound: 2646 ms per chunk at 60 s.
 - **Block-sparse:** 958 ms per chunk. The attention kernel takes 38 ms and stays flat as history grows, but the KV store keeps growing linearly.
-- **Bringing M memory frames into attention:**
-  - stored KV in HBM: +18 ms (M = 8), +42 ms (M = 20);
-  - stored KV in host DRAM: +57 ms (M = 8);
-  - recompute: +313 ms (M = 8), +780 ms (M = 20).
-- **Open item:** host DRAM at M = 20 has a ~330 ms overhead we have not explained yet.
+- **Bringing 20 memory frames into attention** (`memory_time.png`, M = 20 only). Fixed work per chunk is ~1,016 ms (linear layers, window attention, all-to-all); extra time on top of it:
+  - stored KV in HBM: fetch +18 ms (2%);
+  - stored KV in host DRAM: fetch 109 + write-back 28 = +137 ms (13%);
+  - recompute from latents: +757 ms (75%).
+- **Open item:** the host-DRAM run also slows the rest of the chunk by ~330 ms; cause not yet explained (noted on the figure, not drawn).
+- Figure script: `plot_memory_m20.py` (local; the original `plot_report.py` on the server still draws the M = 8 / 20 version with gray bars).
 
-### Slide 7. Access pattern: locality depends on the selection policy
-- **Figures:** `access_pattern.png`, `attn_trace_reuse_rate.png` (Tianqi)
-- **Overlap with the previous chunk:** VSA-style ≈68–74%, close to PAN, which was trained with VSA (65%). Light Forcing-style is ≈30–34%.
-- **Share of older KV read per forward:** VSA ≈40%; LF falls to 4%. New blocks between forwards: VSA ≈7%, LF ≈16–18%.
+### Slide 7. Access pattern: which older KV blocks are read
+- **Figures:** `access_pattern.png` (VSA-style only, redrawn larger by `plot_access_pattern.py` from curves digitized out of the original SVG), `attn_trace_reuse_rate.png` (Tianqi)
+- "Older" = KV blocks beyond the 12 most recent latent frames; all three are per layer and head, averaged.
+  - **(a) Read per forward ≈40%:** blocks picked by the 48 query blocks in one forward ÷ all older blocks (PAN 21.8%).
+  - **(b) New between forwards ≈7%:** share of a forward's blocks the previous forward did not read (PAN 6.7%).
+  - **(c) Shared with the previous chunk ≈70–74%:** share of this chunk's blocks the previous chunk also read (PAN 65%).
+- They set the fetch bandwidth: re-read every forward (a), fetch once per chunk (a + b), keep the previous chunk's blocks (a + b + c).
 - **Reuse (Tianqi):** each fetched block is used by ≈6 query blocks. The rate is stable over time and steps, with per-layer bands.
 - **Arithmetic intensity:**
   - without merging: AI = 128 FLOP/B;

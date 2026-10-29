@@ -1,0 +1,20 @@
+% Poster Table 2 (Results): action enhancement on 88 OOD prompts.
+% Data: Tab. action_enhancement in 4_experiments.tex, rows renamed without game titles:
+%   Zelda Training -> Single domain; Action Scaling -> + Action scaling (x3);
+%   NitroGen 4-game -> 4 real domains; NitroGen + Minecraft -> + Simulator rollouts.
+% Transposed to fit a wide 10.5in x 1.6in slot.
+\documentclass[border=4pt]{standalone}
+\input{prism_style}
+\begin{document}
+\sz{18}{24}
+\setlength{\tabcolsep}{9pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{lcccc}
+\toprule
+Metric & Single domain & + Action scaling (×3) & 4 real domains & \cellcolor{prismpale}\textbf{+ Simulator rollouts} \\
+\midrule
+OOD action cos ↑ & 0.145  & 0.450  & 0.250  & \cellcolor{prismpale}\textbf{0.772} \\
+VBench-Quality ↑ & 0.7731 & 0.8299 & 0.7911 & \cellcolor{prismpale}\textbf{0.8521} \\
+\bottomrule
+\end{tabular}
+\end{document}

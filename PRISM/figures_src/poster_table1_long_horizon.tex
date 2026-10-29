@@ -1,0 +1,22 @@
+% Poster Table 1 (Experimental Setup): long-horizon evaluation.
+% Data: Tab. long_horizon in 4_experiments.tex. Sized for an 11.2in x 4.1in slot.
+\documentclass[border=4pt]{standalone}
+\input{prism_style}
+\begin{document}
+\sz{18}{24}
+\setlength{\tabcolsep}{7pt}
+\renewcommand{\arraystretch}{1.12}
+\begin{tabular}{lccccccccc}
+\toprule
+ & \multicolumn{3}{c}{FVD-CLIP ↓} & \multicolumn{3}{c}{FVD-I3D ↓} & \multicolumn{2}{c}{Action ↓} & VBench ↑ \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7} \cmidrule(lr){8-9} \cmidrule(lr){10-10}
+Method & Short & Mid & Long & Short & Mid & Long & EPE & Fl-all & Quality \\
+\midrule
+SF (vanilla)       & 4.49 & 6.87 & 7.10 & 360.7 & 506.1 & 528.2 & 5.54 & 0.786 & 0.7906 \\
+LongLive (39)      & 3.30 & 4.26 & 4.78 & \textbf{294.9} & 434.6 & 504.7 & 4.70 & 0.782 & 0.8007 \\
+LongLive (81)      & 4.09 & 4.85 & 5.38 & 298.5 & \textbf{385.4} & \textbf{411.8} & 5.22 & 0.786 & 0.8042 \\
+\oursrow \textbf{Ours (9→39)} & \textbf{3.20} & \textbf{4.16} & \textbf{4.48} & 313.2 & 459.0 & 545.5 & \textbf{4.55} & \textbf{0.776} & 0.7941 \\
+\oursrow \textbf{Ours (9→81)} & 3.95 & 4.76 & 5.08 & 303.0 & 390.2 & 460.5 & 5.23 & 0.798 & \textbf{0.8098} \\
+\bottomrule
+\end{tabular}
+\end{document}

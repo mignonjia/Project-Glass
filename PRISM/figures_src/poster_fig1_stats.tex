@@ -1,0 +1,25 @@
+% Poster Figure 1 (Objectives): headline numbers. Sized for a 10.4in x 2.8in slot.
+\documentclass[border=2pt]{standalone}
+\input{prism_style}
+\begin{document}
+\begin{tikzpicture}[
+  card/.style={rectangle, rounded corners=8pt, fill=prismpale, draw=prismlight,
+    line width=1.2pt, minimum width=2.45in, minimum height=2.7in, inner sep=0pt},
+]
+\foreach \i/\num/\top/\bot in {
+  0/30 s/controllable/rollouts,
+  1/233K/curated clips/(174.8 h),
+  2/5.3×/OOD action/following gain,
+  3/77.8\%/win rate vs./GameCraft%
+}{
+  \node[card] (c\i) at (\i*2.62in, 0) {};
+  \begin{scope}
+    \clip[rounded corners=8pt] (c\i.north west) rectangle (c\i.south east);
+    \fill[prismdark] (c\i.north west) rectangle ([yshift=-0.16in]c\i.north east);
+  \end{scope}
+  \draw[prismlight, line width=1.2pt, rounded corners=8pt] (c\i.north west) rectangle (c\i.south east);
+  \node[anchor=center, text=prismdark, font=\sz{52}{58}\bfseries] at ([yshift=0.3in]c\i.center) {\num};
+  \node[anchor=north, text=black!80, align=center, font=\sz{19}{24}] at ([yshift=-0.32in]c\i.center) {\top\\\bot};
+}
+\end{tikzpicture}
+\end{document}

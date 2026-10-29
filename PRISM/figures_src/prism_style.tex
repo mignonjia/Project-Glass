@@ -1,0 +1,26 @@
+% Shared style for PRISM figures. Compile with tectonic (XeTeX engine).
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage{fontspec}
+\setmainfont{Arial}
+\setsansfont{Arial}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{colortbl}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc,backgrounds,decorations.pathreplacing}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% PRISM template palette (sampled from the poster template)
+\definecolor{prismdark}{HTML}{195A99}
+\definecolor{prismmid}{HTML}{1D6FAA}
+\definecolor{prismlight}{HTML}{9BB7DC}
+\definecolor{prismpale}{HTML}{E8EFF8}
+\definecolor{prismaccent}{HTML}{D9822B}
+\definecolor{prismgray}{HTML}{6B7280}
+
+\newcommand{\sz}[2]{\fontsize{#1}{#2}\selectfont}
+\newcommand{\oursrow}{\rowcolor{prismpale}}
+\pgfkeys{/pgf/number format/assume math mode=true}
