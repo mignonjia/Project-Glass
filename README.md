@@ -94,7 +94,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 - [ ] David：GlassML 模拟器能否接推理 trace
 - [ ] 投稿：DAC 2027（约 11/18）是否还投
 - [x] Ring attention 两节点实测（真实 IB，2 节点 × 4 卡），`docs/ring_attn_overhead.md` 第 5 节
-- [ ] Ring attention 两节点 4 通道（`NCCL_NCHANNELS_PER_NET_PEER=4`）复测，确认单节点模拟的 35 GB/s
+- [x] Ring attention 两节点 4 通道（`NCCL_NCHANNELS_PER_NET_PEER=4`）复测：26–34 GB/s，跨节点 ring 开销约减半
 
 **review 目标图表：**
 1. 每系统能同时跑的实时流数：NVL72（只用 HBM / 加 Grace）vs glass，标出容量 / 算力 / 带宽三个上限
@@ -159,4 +159,4 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | 2026-10-10 | 实测 LingBot-World v2 14B 和 Cosmos-H-Dreams（`docs/realtime_profile.md`）：完整历史 dense 做不到实时（120 s 时慢 4.5 倍）；选块恢复实时但每卡要存 74 GB KV；SP 通信每 chunk 约 70 ms、不随历史增长；CPU 内存取数每卡约 28 GB/s。PAN 不再实测。 |
 | 2026-10-14 | 在 LingBot 14B 上接 Light Forcing 选块 + FA4 块稀疏 kernel（SP8，完整 KV）：60 s 历史每 chunk 0.96 s（dense 2.65 s），KV 仍线性增长；同一模型下 VSA 式选块的 chunk 间重合约 70%（与训练过 VSA 的 PAN 一致），Light Forcing 式约 30%，locality 由选块策略决定。见 `docs/realtime_profile.md` 第 3 节。 |
 | 2026-10-15 | 长期记忆存 KV vs 存 latent 重算（`docs/realtime_profile.md` 第 6 节）：14B SP8 重算 8 帧每 chunk 多 283 ms，从 CPU 内存取 KV 46 ms；画质上（WorldKV 设置，LingBot-Fast 14B，往返转头 22.5 s，2 个 seed）回到超出窗口的旧视角时，存 KV 检索 PSNR 16.1、完整 KV 15.5、重算 11.4–12.5、滑动窗口 11.8，即不专门训练时重算的 KV 带不来长期记忆（深层 KV 含生成时上下文）。另给 Tianqi 导出了逻辑 attention trace（`docs/attn_trace.md`）。 |
-| 2026-10-29 | Ring attention 开销（`docs/ring_attn_overhead.md`，起因是 4K 视频生成里 Ulysses 不够用、要 ring）：4K、5 s 切 8 卡时 NVLink 上 ring 只多 6%（推理）/ 2%（训练）；开销由每卡 token 数决定，每卡 16K token、全走 IB 时多 86% / 54%；ring 只藏住部分通信，另有约 9% / 3% 与带宽无关的固定开销；稀疏 attention 让 ring 变成带宽瓶颈。两节点（2 × 4 卡，真实 IB）实测：ring 8 跨节点每卡 85K token 多 12% / 10%，和单节点 IB 模拟一致；Ulysses 4 × ring 2 只多 2%。NCCL 默认每个 IB 对端 2 个通道，只有 20 GB/s/卡，设 4 个通道到 35 GB/s，ring 开销约减半。投影（4K 5 s）：IB 上 ring 64 多 145% / 64%（默认 / 4 通道），Ulysses 8 × ring 8 多 23% / 20%；稀疏时 115% / 48%，NVL72 / glass 18% / 16%。 |
+| 2026-10-29 | Ring attention 开销（`docs/ring_attn_overhead.md`，起因是 4K 视频生成里 Ulysses 不够用、要 ring）：4K、5 s 切 8 卡时 NVLink 上 ring 只多 6%（推理）/ 2%（训练）；开销由每卡 token 数决定，每卡 16K token、全走 IB 时多 86% / 54%；ring 只藏住部分通信，另有约 9% / 3% 与带宽无关的固定开销；稀疏 attention 让 ring 变成带宽瓶颈。两节点（2 × 4 卡，真实 IB）实测：ring 8 跨节点每卡 85K token 多 12% / 10%，和单节点 IB 模拟一致；Ulysses 4 × ring 2 只多 2%。NCCL 默认每个 IB 对端 2 个通道，只有 20 GB/s/卡，设 4 个通道后两节点实测 26–34 GB/s，跨节点 ring 8 开销约减半（每卡 85K token：12% → 3%）。投影（4K 5 s）：IB 上 ring 64 多 145% / 80%（默认 / 4 通道），Ulysses 8 × ring 8 多 23% / 20%；稀疏时 115% / 61%，NVL72 / glass 18% / 16%。 |
