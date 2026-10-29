@@ -93,6 +93,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 - [ ] 可选对照：HY-WorldPlay 4 步 480p 模型，测每 chunk 延迟和重算占比
 - [ ] David：GlassML 模拟器能否接推理 trace
 - [ ] 投稿：DAC 2027（约 11/18）是否还投
+- [ ] Ring attention 两节点实测（真实 IB，2 节点 × 4 卡，lowprio 排队中），补 `docs/ring_attn_overhead.md` 第 5 节
 
 **review 目标图表：**
 1. 每系统能同时跑的实时流数：NVL72（只用 HBM / 加 Grace）vs glass，标出容量 / 算力 / 带宽三个上限
@@ -121,6 +122,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | `docs/attn_trace.md` | 给硬件建模的逻辑 attention trace：LingBot 14B 完整历史 KV，每 chunk / 去噪步 / 层 / head / query 块 attend 到的 64 KB KV 块（VSA 式、LF 式两种选块，120 s），数据在 `data/attn_trace/`（Git LFS） |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
+| `docs/ring_attn_overhead.md` | Ring attention（序列并行，训练和推理都用）的开销：4K 视频 / Wan2.1-14B 形状，单节点 NVLink 与 IB 实测、开销来源（重叠份额、NCCL 中等消息带宽）、到 NVL72 / glass 的投影 |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
 | `survey/sparse_attn_video_training.md` | 稀疏 attention × 视频 × 多卡系统文献；最相关：SparSP、MTraining、db-SP |
 | `survey/glass_memory_papers.md` | 玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频内存文献 |
@@ -156,3 +158,4 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | 2026-10-10 | 实测 LingBot-World v2 14B 和 Cosmos-H-Dreams（`docs/realtime_profile.md`）：完整历史 dense 做不到实时（120 s 时慢 4.5 倍）；选块恢复实时但每卡要存 74 GB KV；SP 通信每 chunk 约 70 ms、不随历史增长；CPU 内存取数每卡约 28 GB/s。PAN 不再实测。 |
 | 2026-10-14 | 在 LingBot 14B 上接 Light Forcing 选块 + FA4 块稀疏 kernel（SP8，完整 KV）：60 s 历史每 chunk 0.96 s（dense 2.65 s），KV 仍线性增长；同一模型下 VSA 式选块的 chunk 间重合约 70%（与训练过 VSA 的 PAN 一致），Light Forcing 式约 30%，locality 由选块策略决定。见 `docs/realtime_profile.md` 第 3 节。 |
 | 2026-10-15 | 长期记忆存 KV vs 存 latent 重算（`docs/realtime_profile.md` 第 6 节）：14B SP8 重算 8 帧每 chunk 多 283 ms，从 CPU 内存取 KV 46 ms；画质上（WorldKV 设置，LingBot-Fast 14B，往返转头 22.5 s，2 个 seed）回到超出窗口的旧视角时，存 KV 检索 PSNR 16.1、完整 KV 15.5、重算 11.4–12.5、滑动窗口 11.8，即不专门训练时重算的 KV 带不来长期记忆（深层 KV 含生成时上下文）。另给 Tianqi 导出了逻辑 attention trace（`docs/attn_trace.md`）。 |
+| 2026-10-29 | Ring attention 开销（`docs/ring_attn_overhead.md`，起因是 4K 视频生成里 Ulysses 不够用、要 ring）：4K、5 s 切 8 卡时 NVLink 上 ring 只多 6%（推理）/ 2%（训练）；开销由每卡 token 数决定，每卡 16K token、全走 IB 时多 86% / 54%；ring 只藏住部分通信，另有约 9% / 3% 与带宽无关的固定开销；稀疏 attention 让 ring 变成带宽瓶颈（IB 上 64 卡多约 170%，NVL72 / glass 约 20% / 17%）。两节点真实 IB 待测。 |
