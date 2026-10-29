@@ -124,7 +124,7 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
 | `docs/ring_attn_overhead.md` | Ring attention（序列并行，训练和推理都用）的开销：4K 视频 / Wan2.1-14B 形状，单节点 NVLink、两节点真实 IB 实测、开销来源（重叠份额、NCCL 中等消息带宽、IB 每对端通道数）、到 NVL72 / glass 的投影 |
-| `meetings/Mingjia-1029-update.pptx` | 周会两页（沿用 `meetings/Mingjia-1022-update.pptx` 的格式）：ring attention 实测（NVLink vs 两节点 IB、NCCL 通道数）和 64 卡投影表（IB / NVL72 / glass，dense / causal / 稀疏）；生成脚本在 `exp/ring-attn` 的 `build_slides.py` |
+| `meetings/Mingjia-1029-update.pptx` | 周会一页（沿用 `meetings/Mingjia-1022-update.pptx` 的格式）：双向视频 attention 用 Ulysses × ring 时，dense 和 sparse 都不是通信瓶颈（训练开销表：实测黑体、投影蓝色，IB / NVL72 / glass），所以互连问题要靠 causal + 完整历史 KV cache + 稀疏选块的 workload；生成脚本在 `exp/ring-attn` 的 `build_slides.py` |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
 | `survey/sparse_attn_video_training.md` | 稀疏 attention × 视频 × 多卡系统文献；最相关：SparSP、MTraining、db-SP |
 | `survey/glass_memory_papers.md` | 玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频内存文献 |
