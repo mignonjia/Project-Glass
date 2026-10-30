@@ -42,7 +42,11 @@
 
 - **Seaweed APT2**：736×416 时窗口 N = 30 个 latent 帧（5 s）；"1280×720 is trained and inference with a smaller attention window size N = 15 to fit the memory" **[原文核对]**。分辨率一高，记忆就减半。
 - **InteractiveAvatar**："storing all historical frames is computationally expensive and impractical for streaming generation" **[原文核对]**
-- **HY-WorldPlay**：加大空间记忆会让 teacher 显存"greatly increase"。
+- **Krea Realtime 14B**（产品）："we cannot let the KV cache of past frames grow indefinitely due to memory constraints. The only practical approach is a sliding context window" **[原文核对]**
+- **Quant VideoGen**：KV cache "becomes the binding resource well before raw compute saturates"；5 s 480p 的 KV 约 34 GB，比参数 27 GB 还大；Self-Forcing、WorldPlay 截短历史 "primarily driven by GPU memory concerns" **[原文核对]**
+- **PackForcing**：2 分钟 832×480 的完整 KV 约 138 GB，超过约 80 s 就 out-of-memory（A100-80GB）**[原文核对]**
+- **HY-WorldPlay**："naively using all past frames as context … is computationally intractable and redundant for long sequences"（原文核对；旧笔记里的"显存 greatly increase"原文没有，它说的 "memory size" 指上下文帧数）
+- 共 28 条逐字核对过的引文（含 TempoKV、Forcing-KV、MAGI-1、Rolling Forcing、LingBot-World-Infinity 等）见 `../survey/kv_cache_memory_quotes.md`。
 - **PAN 实测**：448p、SF 4 步、单张 H200 保留完整历史，60 s 就到 130 GiB（`pan_measurements.md` §3）。
 
 按 PAN 大小的模型推算（每 token 721 KB，720p 每秒 4.43 GB）：

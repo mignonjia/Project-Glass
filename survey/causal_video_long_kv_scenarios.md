@@ -73,7 +73,7 @@
 
 | 工作 | 来源 | 规格 | 记忆机制 | 要点 |
 |---|---|---|---|---|
-| HY-WorldPlay / HY-World 1.5（腾讯混元） | [arXiv 2512.14614](https://arxiv.org/abs/2512.14614) | 720p、24 fps；发布的权重是 480p；单卡 72 GB，sp=8 时每卡 28 GB | 3 个近期 chunk + 1 个按视野 / 距离检索的空间 chunk，共约 16 latent ≈ 2.7 s（推算）；重排位置编码 | 只生成约 30 s；遮挡时视野检索"may fail"；空间记忆加大会让 teacher 显存"greatly increase"。**README 里的对照路线** |
+| HY-WorldPlay / HY-World 1.5（腾讯混元） | [arXiv 2512.14614](https://arxiv.org/abs/2512.14614) | 720p、24 fps；发布的权重是 480p；单卡 72 GB，sp=8 时每卡 28 GB | 3 个近期 chunk + 1 个按视野 / 距离检索的空间 chunk，共约 16 latent ≈ 2.7 s（推算）；重排位置编码 | 只生成约 30 s；遮挡时视野检索"may fail"；空间记忆加大 "may significantly increase the teacher model's memory size"（指上下文帧数，不是显存；2026-10-30 核对）。**README 里的对照路线** |
 | Context-as-Memory（港大 / 快手） | [arXiv 2506.03141](https://arxiv.org/abs/2506.03141) | 640×352，**0.97 fps**，非实时 | 按视野检索 20 帧 | 速度随上下文变慢：1 帧 1.60 fps，20 帧 0.97 fps，30 帧 0.79 fps；"Including all historical frames … would be extremely resource-intensive" |
 | World Labs RTFM | [博客 2025-10](https://www.worldlabs.ai/blog/rtfm) | 1 张 H100，"interactive framerates" | 带位姿的帧作空间记忆，按区域检索附近的帧 | "You can interact with RTFM forever and the world will never be forgotten"；只支持静态世界 |
 | Yume 1.5（上海 AI Lab / 复旦） | CVPR 2026，[arXiv 2512.22096](https://arxiv.org/abs/2512.22096) | 540p、12 fps，1 张 A100 | 去掉 KV cache，历史分层压缩 | 只展示 30 s；动机就是"memory consumption … as the generated video length grows" |
@@ -185,7 +185,7 @@
 
 ## 对 Glass 的含义
 
-1. **容量**：A–G 都要几分钟到几小时，PAN 大小的模型每路 0.3–19 TB（第 1 节总表）。现有系统全部截到几秒，APT2 明确写"to fit the memory"把窗口减半，HY-WorldPlay 写空间记忆会让显存"greatly increase"。
+1. **容量**：A–G 都要几分钟到几小时，PAN 大小的模型每路 0.3–19 TB（第 1 节总表）。现有系统全部截到几秒，APT2 明确写"to fit the memory"把窗口减半，Krea Realtime 14B 写"cannot let the KV cache … grow indefinitely due to memory constraints"（逐字引文汇总见 `kv_cache_memory_quotes.md`）。
 2. **带宽 + 截止时间**：Dreamer 4 直接写推理受"读长上下文 KV 的内存带宽"限制；Matrix-Game 3.0 的检索不放在 GPU 上时从 40 fps 掉到 6.6 fps；Context-as-Memory 的帧率随上下文增大而下降。
 3. **按内容、不可预取**：B（按视野检索）、C（跨玩家）、D / E（遮挡后重现）、G（InteractiveAvatar 按 SigLIP 选关键帧）都是"看到新内容才知道取哪段历史"，和 PAN VSA 的"打分后才知道取哪些块"同类。
 4. **多路并发**：E（每场景 32 路）、F（RL 并行 rollout、DreamGen 1500 张卡）、商用服务（1–2 美元 / 用户小时）都要求一个系统同时跑很多路，对应 review 图表 1（每系统流数）。

@@ -117,19 +117,22 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | 路径 | 内容 |
 |---|---|
 | `docs/motivation.md` | paper motivation：哪些实时应用需要长历史、现有系统只留几秒、实时把容量变成带宽问题，含可引用原话和预期质疑 |
+| `docs/memory_pool_papers.md` | 光互连内存池论文：SiPAM（IEEE Micro 2026）和光连 HBM（IEEE CAL 2025）讲了什么、怎么算的（纸面模型、dense LLM）；我们的 workload 和它们的假设哪里不同；设计点；小 work（短文）方案：内存池缺容量不缺速度，HBM + LPDDR 混合 |
 | `docs/realtime_inference_estimate.md` | 实时推理估算：每系统流数、容量 / 算力 / 带宽上限、DRAM 带宽扫描、视频长度扫描、trace 里的放置统计 |
 | `docs/realtime_profile.md` | 实测：LingBot-World v2 14B（8×H200，SP、FA4）和 Cosmos-H-Dreams 2B 的长 KV 实时推理——完整历史 vs sliding window vs 存全量 KV + 选块、SP 通信、容量层取数带宽、长期记忆存 KV vs 存 latent 重算（速度和画质） |
 | `docs/report/outline.md` | 给导师汇报的提纲和配图（`docs/report/figures/`）：WorldKV、OmniMem 两篇 motivation，存 KV vs 重算的画质和速度，profiling 设置、访问模式、取数带宽 |
 | `docs/attn_trace.md` | 给硬件建模的逻辑 attention trace：LingBot 14B 完整历史 KV，每 chunk / 去噪步 / 层 / head / query 块 attend 到的 64 KB KV 块（VSA 式、LF 式两种选块，120 s），数据在 `data/attn_trace/`（Git LFS） |
 | `docs/pan_measurements.md` | PAN 参数与公式、推理显存实测、推理选择 trace（每步 22.9%、跨步并集 27.7%） |
 | `docs/training_reference.md` | 训练方向的结论和关键数字（已结束） |
-| `docs/ring_attn_overhead.md` | Ring attention（序列并行，训练和推理都用）的开销：4K 视频 / Wan2.1-14B 形状，单节点 NVLink、两节点真实 IB 实测、开销来源（重叠份额、NCCL 中等消息带宽、IB 每对端通道数）、到 NVL72 / glass 的投影 |
+| `docs/ring_attn_overhead.md` | Ring attention（序列并行，训练和推理都用）的开销：4K 视频 / Wan2.1-14B 形状，单节点 NVLink、两节点真实 IB 实测、开销来源（重叠份额、NCCL 中等消息带宽、IB 每对端通道数）、到 NVL72 / glass 的投影；第 8 节（10-30）：双向视频 attention 不是通信瓶颈、4K 10 s 投影、显存估算 |
 | `meetings/Mingjia-1029-update.pptx` | 周会一页（沿用 `meetings/Mingjia-1022-update.pptx` 的格式）：双向视频 attention 用 Ulysses × ring 时，dense 和 sparse 都不是通信瓶颈（训练开销表：实测黑体、投影蓝色，IB / NVL72 / glass），所以互连问题要靠 causal + 完整历史 KV cache + 稀疏选块的 workload；生成脚本在 `exp/ring-attn` 的 `build_slides.py` |
 | `survey/causal_video_long_kv_scenarios.md` | 需要长 KV 的实时 causal 视频场景（游戏、3D 探索、多人、机器人、驾驶、RL、avatar），每个场景的时长 / 帧率 / 并发需求和 PAN 等价 KV，用于 motivation |
 | `survey/sparse_attn_video_training.md` | 稀疏 attention × 视频 × 多卡系统文献；最相关：SparSP、MTraining、db-SP |
 | `survey/glass_memory_papers.md` | 玻璃基板 / scale-up 系统 / AI 内存分层 / 长视频内存文献 |
 | `survey/venues_and_timeline.md` | 投稿会议与 deadline（2026-10 至 2027-12） |
+| `survey/kv_cache_memory_quotes.md` | 34 篇实时 / 自回归视频生成论文里"KV cache 随视频变长、显存放不下"的原文（28 条逐字核对），intro 推荐 5 条 |
 | `David_MoE_glass.pdf` | GlassML HPCA 2027 投稿稿（**保密，勿外传；仓库保持私有**） |
+| `SiPAM_Silicon_Photonic_Accelerated_Memory_Pooling_Architecture.pdf` | SiPAM 原文（CC BY 4.0）；光连 HBM 那篇的 PDF 是 IEEE 版权，只放在本地、不提交 |
 | `Mingjia-Research/` | 早期材料：world model memory 论证、动机 slides、团队 deck |
 
 ## 待解决问题
@@ -161,3 +164,4 @@ PAN、720p、10 分钟流、4 步 + 1 次 commit、无 CFG、remote top-k 5%，�
 | 2026-10-14 | 在 LingBot 14B 上接 Light Forcing 选块 + FA4 块稀疏 kernel（SP8，完整 KV）：60 s 历史每 chunk 0.96 s（dense 2.65 s），KV 仍线性增长；同一模型下 VSA 式选块的 chunk 间重合约 70%（与训练过 VSA 的 PAN 一致），Light Forcing 式约 30%，locality 由选块策略决定。见 `docs/realtime_profile.md` 第 3 节。 |
 | 2026-10-15 | 长期记忆存 KV vs 存 latent 重算（`docs/realtime_profile.md` 第 6 节）：14B SP8 重算 8 帧每 chunk 多 283 ms，从 CPU 内存取 KV 46 ms；画质上（WorldKV 设置，LingBot-Fast 14B，往返转头 22.5 s，2 个 seed）回到超出窗口的旧视角时，存 KV 检索 PSNR 16.1、完整 KV 15.5、重算 11.4–12.5、滑动窗口 11.8，即不专门训练时重算的 KV 带不来长期记忆（深层 KV 含生成时上下文）。另给 Tianqi 导出了逻辑 attention trace（`docs/attn_trace.md`）。 |
 | 2026-10-29 | Ring attention 开销（`docs/ring_attn_overhead.md`，起因是 4K 视频生成里 Ulysses 不够用、要 ring）：4K、5 s 切 8 卡时 NVLink 上 ring 只多 6%（推理）/ 2%（训练）；开销由每卡 token 数决定，每卡 16K token、全走 IB 时多 86% / 54%；ring 只藏住部分通信，另有约 9% / 3% 与带宽无关的固定开销；稀疏 attention 让 ring 变成带宽瓶颈。两节点（2 × 4 卡，真实 IB）实测：ring 8 跨节点每卡 85K token 多 12% / 10%，和单节点 IB 模拟一致；Ulysses 4 × ring 2 只多 2%。NCCL 默认每个 IB 对端 2 个通道，只有 20 GB/s/卡，设 4 个通道后两节点实测 26–34 GB/s，跨节点 ring 8 开销约减半（每卡 85K token：12% → 3%）。投影（4K 5 s）：IB 上 ring 64 多 145% / 80%（默认 / 4 通道），Ulysses 8 × ring 8 多 23% / 20%；稀疏时 115% / 61%，NVL72 / glass 18% / 16%。 |
+| 2026-10-30 | 结论：双向视频 attention（dense 或稀疏）在 Ulysses × ring 下不是通信瓶颈（4K 10 s 切 16 卡投影约 1%），glass 的论点要放在 causal + 完整历史 KV + 稀疏选块的 workload（`docs/ring_attn_overhead.md` 第 8 节；1029 slide 改成一页）。读了 SiPAM 和光连 HBM 两篇光互连内存池论文（`docs/memory_pool_papers.md`）：都是纸面模型 + dense LLM；我们的 workload 缺容量不缺速度（每秒读量约为存储量的 1.7–4 倍，HBM 42 倍），提出 HBM + LPDDR 混合池的小 work。整理 28 条逐字核对的"KV cache 放不下"引文（`survey/kv_cache_memory_quotes.md`），修正 HY-WorldPlay 旧引文。 |

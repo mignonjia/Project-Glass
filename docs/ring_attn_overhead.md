@@ -22,6 +22,8 @@
 
 **和项目的关系**：dense 的 4K 视频 attention 计算量太大，带宽好藏；真正吃带宽的是"每卡 token 少"（卡多、序列相对短）和"attention 变稀疏"两种情况。稀疏 attention + ring 把我们之前的稀疏故事从推理扩展到训练：稀疏省了计算，但 ring 每一步仍要传完整的 KV 块，通信藏不住。
 
+**结论更新（2026-10-30，第 8 节）**：双向视频 attention（dense 或稀疏）在"节点内 Ulysses × 跨节点 ring"下都不是通信瓶颈，glass 在这类训练 / 推理上基本没有收益；互连问题要靠 causal + 完整历史 KV cache + 稀疏选块的 workload。
+
 ## 1. 设置
 
 | 项 | 值 |
@@ -191,3 +193,40 @@ python3 plot_ring.py runs/nvlink.jsonl runs/ib-2node-8gpu.jsonl runs/ib-2node-np
 ```
 
 从交互作业（如 debug 节点）里提交 sbatch 时，作业会继承当前 shell 的 CPU 绑定，`srun` 报 "CPU binding outside of job step allocation"；`ring_2node.sbatch` 已经清掉这些变量并用 `--cpu-bind=none`。
+
+## 8. 对项目的结论与补充估算（2026-10-30）[估]
+
+### 8.1 双向视频 attention 不是通信瓶颈
+
+训练 attention 开销（= 分布式时间 ÷ 单卡 flash-attn 理想时间 − 1，forward + backward，单层 attention）。第一行实测，其余为 `model_ring.py` 投影（`--N 1328400` 为 10 s）：
+
+| 配置 | 卡数 | IB 4 通道 | NVL72 | glass |
+|---|---:|---:|---:|---:|
+| dense 5 s，Ulysses 4 × ring 2（两节点实测） | 8 | 1% | — | — |
+| dense 10 s，Ulysses 8 × ring 2 | 16 | 1% | 0% | 0% |
+| 稀疏 10 s，Ulysses 8 × ring 2 | 16 | 5% | 1% | 0% |
+| dense 5 s，Ulysses 8 × ring 8 | 64 | 18% | 12% | 12% |
+| 稀疏 5 s，Ulysses 8 × ring 8 | 64 | 56% | 14% | 13% |
+| 稀疏 + causal 5 s，Ulysses 8 × ring 8 | 64 | 137% | 16% | 13% |
+
+- dense 的长视频序列很长，每个 ring 成员的 token 远高于平衡点，通信藏得住；稀疏只在单个样本切到 64 卡以上时才暴露通信。
+- 所以 glass 的论点不能放在双向视频的训练 / 推理上，而要放在 causal + 完整历史 KV cache + 稀疏选块的 workload（逐 chunk 实时生成）。这一页结论在 `meetings/Mingjia-1029-update.pptx`。
+- 10 s 切 16 卡时 ring 16 的投影是 13%（IB 默认）/ 9%（4 通道），比 5 s 的 23% / 17% 低：每卡 token 从 42K 变成 83K。
+
+### 8.2 补充说明
+
+- **Ulysses 的并行度必须整除 head 数**：Wan2.1-14B 有 40 个 head，可选 1、2、4、5、8、10、20、40；节点内最多 8，16 不行。超过 8 卡用 Ulysses × ring（16 卡 = Ulysses 8 × ring 2）或纯 ring。Wan 的 16 卡以上都没实测，只有投影。
+- **平衡点** s* = flash-attn 吞吐 ÷ 每卡带宽（head 数和维度约掉；每步计算 4·s²·H·d，通信 4·s·H·d 字节）。按实测约 375 TFLOP/s：NVLink 约 1K、IB 默认约 19K、IB 4 通道约 12K、NVL72 约 0.4K、glass 约 0.1K token。用峰值带宽算，小消息时实际平衡点更高。
+- **B300 vs H200**：BF16 / FP8 dense 峰值约 2.3–2.5 倍（989 TFLOP/s vs 2.25–2.5 PFLOP/s），另有 FP4（约 15 PFLOP/s）。平衡点约乘 2.5；但 B300 一般配 800G 网卡（每卡 100 GB/s 线速），按线速算平衡点和 H200 接近，NCCL 在 800G 上能跑到几成没测。
+
+### 8.3 显存（Wan2.1-14B 形状）
+
+单层 ring attention 每卡峰值（8 卡 ring，实测）：
+
+| 每卡 token | Q、K、V | 推理峰值 | 训练峰值 |
+|---|---:|---:|---:|
+| 16K | 0.47 GiB | 2.2 GiB | 4.1 GiB |
+| 85K | 2.4 GiB | 11.4 GiB | 21.1 GiB |
+
+- 推理时双向模型逐层计算，每层的 K、V 用完就释放，显存不随层数增长；整模型约 40 GB / 卡（权重 28 GB + 单层峰值）。这和 causal 模型存 40 层历史 KV cache（LingBot 120 s 每卡 74 GB）是两回事；同口径换算，4K 5 s（68 万 token）若存 40 层 KV 也是每卡约 70 GB。
+- 训练（8 卡序列并行 + FSDP + 全量 gradient checkpointing，推算）：4K 5 s 每卡约 95–100 GB（8 张 H200 放得下）；4K 10 s 每卡约 150–160 GB（放不下，要 16 卡、把 checkpoint 卸到 CPU，或换 B300）。不开 checkpointing 时每层激活约 10–13 GB，40 层约 400–500 GB。粗算单步训练时间：8 张 H200、flash-attn 2，5 s 约 10 分钟，10 s 约 40 分钟。
